@@ -19,6 +19,7 @@
 #include "td/telegram/DialogId.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/InlineQueriesManager.h"
+#include "td/telegram/LanguagePackManager.h"
 #include "td/telegram/Location.h"
 #include "td/telegram/MessageId.h"
 #include "td/telegram/MessagesManager.h"
@@ -289,8 +290,8 @@ Promise<> UpdatesManager::set_pts(int32 pts, const char *source) {
     return result;
   }
   Promise<> result;
-  if (pts > get_pts() || (0 < pts && pts < get_pts() - 999999)) {  // pts can only go up or drop cardinally
-    if (pts < get_pts() - 999999) {
+  if (pts > get_pts() || (0 < pts && pts < get_pts() - 399999)) {  // pts can only go up or drop cardinally
+    if (pts < get_pts() - 399999) {
       LOG(WARNING) << "Pts decreases from " << get_pts() << " to " << pts << " from " << source << ". " << get_state();
     } else {
       LOG(INFO) << "Update pts from " << get_pts() << " to " << pts << " from " << source;
@@ -487,6 +488,8 @@ bool UpdatesManager::is_acceptable_message(const telegram_api::Message *message_
         case telegram_api::messageActionPaymentSent::ID:
         case telegram_api::messageActionPaymentSentMe::ID:
         case telegram_api::messageActionScreenshotTaken::ID:
+        case telegram_api::messageActionSecureValuesSent::ID:
+        case telegram_api::messageActionSecureValuesSentMe::ID:
           break;
         case telegram_api::messageActionChatCreate::ID: {
           auto chat_create = static_cast<const telegram_api::messageActionChatCreate *>(action);
@@ -1126,13 +1129,18 @@ void UpdatesManager::on_pending_updates(vector<tl_object_ptr<telegram_api::Updat
         message_ptr = &update_edit_channel_message->message_;
         pts = update_edit_channel_message->pts_;
       }
-      if (message_ptr != nullptr) {
+
+      // for channels we can try to replace unacceptable update with updateChannelTooLong
+      // don't do that for service messages, because they can be about bot's kicking
+      if (message_ptr != nullptr && (*message_ptr)->get_id() != telegram_api::messageService::ID) {
         auto dialog_id = td_->messages_manager_->get_message_dialog_id(*message_ptr);
         if (dialog_id.get_type() == DialogType::Channel) {
-          // for channels we can replace unacceptable update with updateChannelTooLong
-          update = telegram_api::make_object<telegram_api::updateChannelTooLong>(
-              telegram_api::updateChannelTooLong::PTS_MASK, dialog_id.get_channel_id().get(), pts);
-          continue;
+          auto channel_id = dialog_id.get_channel_id();
+          if (td_->contacts_manager_->have_channel_force(channel_id)) {
+            update = telegram_api::make_object<telegram_api::updateChannelTooLong>(
+                telegram_api::updateChannelTooLong::PTS_MASK, channel_id.get(), pts);
+            continue;
+          }
         } else {
           LOG(ERROR) << "Update is not from a channel: " << to_string(update);
         }
@@ -1472,9 +1480,25 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateChannelAvailabl
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateNotifySettings> update, bool /*force_apply*/) {
   CHECK(update != nullptr);
-  td_->messages_manager_->on_update_notify_settings(
-      td_->messages_manager_->get_notification_settings_scope(std::move(update->peer_)),
-      std::move(update->notify_settings_));
+  switch (update->peer_->get_id()) {
+    case telegram_api::notifyPeer::ID: {
+      DialogId dialog_id(static_cast<const telegram_api::notifyPeer *>(update->peer_.get())->peer_);
+      if (dialog_id.is_valid()) {
+        td_->messages_manager_->on_update_dialog_notify_settings(dialog_id, std::move(update->notify_settings_));
+      } else {
+        LOG(ERROR) << "Receive wrong " << to_string(update);
+      }
+      break;
+    }
+    case telegram_api::notifyUsers::ID:
+      return td_->messages_manager_->on_update_scope_notify_settings(NotificationSettingsScope::Private,
+                                                                     std::move(update->notify_settings_));
+    case telegram_api::notifyChats::ID:
+      return td_->messages_manager_->on_update_scope_notify_settings(NotificationSettingsScope::Group,
+                                                                     std::move(update->notify_settings_));
+    default:
+      UNREACHABLE();
+  }
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateWebPage> update, bool force_apply) {
@@ -1653,12 +1677,17 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateDraftMessage> u
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateDialogPinned> update, bool /*force_apply*/) {
-  td_->messages_manager_->on_update_dialog_pinned(
+  td_->messages_manager_->on_update_dialog_is_pinned(
       DialogId(update->peer_), (update->flags_ & telegram_api::updateDialogPinned::PINNED_MASK) != 0);
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updatePinnedDialogs> update, bool /*force_apply*/) {
   td_->messages_manager_->on_update_pinned_dialogs();  // TODO use update->order_
+}
+
+void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateDialogUnreadMark> update, bool /*force_apply*/) {
+  td_->messages_manager_->on_update_dialog_is_marked_as_unread(
+      DialogId(update->peer_), (update->flags_ & telegram_api::updateDialogUnreadMark::UNREAD_MASK) != 0);
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateDcOptions> update, bool /*force_apply*/) {
@@ -1754,8 +1783,7 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateBotShippingQuer
                make_tl_object<td_api::updateNewShippingQuery>(
                    update->query_id_, td_->contacts_manager_->get_user_id_object(user_id, "updateNewShippingQuery"),
                    update->payload_.as_slice().str(),
-                   get_shipping_address_object(get_shipping_address(
-                       std::move(update->shipping_address_)))));  // TODO use convert_shipping_address
+                   get_address_object(get_address(std::move(update->shipping_address_)))));  // TODO use convert_address
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateBotPrecheckoutQuery> update, bool /*force_apply*/) {
@@ -1789,12 +1817,16 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateContactsReset> 
   td_->contacts_manager_->on_update_contacts_reset();
 }
 
-// unsupported updates
-
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateLangPackTooLong> update, bool /*force_apply*/) {
+  send_closure(G()->language_pack_manager(), &LanguagePackManager::on_language_pack_version_changed,
+               std::numeric_limits<int32>::max());
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateLangPack> update, bool /*force_apply*/) {
+  send_closure(G()->language_pack_manager(), &LanguagePackManager::on_update_language_pack,
+               std::move(update->difference_));
 }
+
+// unsupported updates
 
 }  // namespace td

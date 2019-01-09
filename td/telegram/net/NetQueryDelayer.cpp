@@ -16,6 +16,7 @@
 #include "td/utils/Status.h"
 
 namespace td {
+
 void NetQueryDelayer::delay(NetQueryPtr query) {
   query->debug("try delay");
   query->is_ready();
@@ -26,14 +27,10 @@ void NetQueryDelayer::delay(NetQueryPtr query) {
     // skip
   } else if (code == 420) {
     auto msg = query->error().message();
-    auto prefix = Slice("FLOOD_WAIT_");
-    if (msg.substr(0, prefix.size()) == prefix) {
-      timeout = to_integer<int>(msg.substr(prefix.size()));
-      if (timeout < 0) {
-        timeout = 0;
-      }
-      if (timeout > 24 * 60 * 60) {
-        timeout = 24 * 60 * 60;
+    for (auto prefix : {Slice("FLOOD_WAIT_"), Slice("2FA_CONFIRM_WAIT_"), Slice("TAKEOUT_INIT_DELAY_")}) {
+      if (begins_with(msg, prefix)) {
+        timeout = clamp(to_integer<int>(msg.substr(prefix.size())), 0, 14 * 24 * 60 * 60);
+        break;
       }
     }
   } else {
@@ -112,8 +109,9 @@ void NetQueryDelayer::on_slot_event(uint64 id) {
 
 void NetQueryDelayer::tear_down() {
   container_.for_each([](auto id, auto &query_slot) {
-    query_slot.query_->set_error(Status::Error(500, "Internal Server Error: closing"));
+    query_slot.query_->set_error(Status::Error(500, "Request aborted"));
     G()->net_query_dispatcher().dispatch(std::move(query_slot.query_));
   });
 }
+
 }  // namespace td

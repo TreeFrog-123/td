@@ -342,6 +342,10 @@ class JsonArrayScope : public JsonScope {
   }
   template <class T>
   JsonArrayScope &operator<<(const T &x) {
+    return (*this)(x);
+  }
+  template <class T>
+  JsonArrayScope &operator()(const T &x) {
     enter_value() << x;
     return *this;
   }
@@ -375,19 +379,23 @@ class JsonObjectScope : public JsonScope {
   }
   template <class S, class T>
   JsonObjectScope &operator<<(std::tuple<S, T> key_value) {
-    return *this << std::pair<S, T>(std::get<0>(key_value), std::get<1>(key_value));
+    return (*this)(std::get<0>(key_value), std::get<1>(key_value));
   }
   template <class S, class T>
   JsonObjectScope &operator<<(std::pair<S, T> key_value) {
+    return (*this)(key_value.first, key_value.second);
+  }
+  template <class S, class T>
+  JsonObjectScope &operator()(S &&key, T &&value) {
     CHECK(is_active());
     if (is_first_) {
       *sb_ << ",";
     } else {
       is_first_ = true;
     }
-    jb_->enter_value() << key_value.first;
+    jb_->enter_value() << key;
     *sb_ << ":";
-    jb_->enter_value() << key_value.second;
+    jb_->enter_value() << value;
     return *this;
   }
   JsonObjectScope &operator<<(const JsonRaw &key_value) {
@@ -645,18 +653,18 @@ class JsonValue : public Jsonable {
 
 inline StringBuilder &operator<<(StringBuilder &sb, JsonValue::Type type) {
   switch (type) {
-    case JsonValue::Type::Object:
-      return sb << "JsonObject";
-    case JsonValue::Type::Boolean:
-      return sb << "JsonBoolean";
     case JsonValue::Type::Null:
-      return sb << "JsonNull";
+      return sb << "Null";
     case JsonValue::Type::Number:
-      return sb << "JsonNumber";
-    case JsonValue::Type::Array:
-      return sb << "JsonArray";
+      return sb << "Number";
+    case JsonValue::Type::Boolean:
+      return sb << "Boolean";
     case JsonValue::Type::String:
-      return sb << "JsonString";
+      return sb << "String";
+    case JsonValue::Type::Array:
+      return sb << "Array";
+    case JsonValue::Type::Object:
+      return sb << "Object";
     default:
       UNREACHABLE();
       return sb;
@@ -738,6 +746,75 @@ StrT json_encode(const ValT &val) {
   LOG_IF(ERROR, jb.string_builder().is_error()) << "Json buffer overflow";
   auto slice = jb.string_builder().as_cslice();
   return StrT(slice.begin(), slice.size());
+}
+
+template <class T>
+class ToJsonImpl : public Jsonable {
+ public:
+  explicit ToJsonImpl(const T &value) : value_(value) {
+  }
+  void store(JsonValueScope *scope) const {
+    to_json(*scope, value_);
+  }
+
+ private:
+  const T &value_;
+};
+
+template <class T>
+auto ToJson(const T &value) {
+  return ToJsonImpl<T>(value);
+}
+
+template <class T>
+void to_json(JsonValueScope &jv, const T &value) {
+  jv << value;
+}
+
+template <class F>
+class JsonObjectImpl : Jsonable {
+ public:
+  explicit JsonObjectImpl(F &&f) : f_(std::forward<F>(f)) {
+  }
+  void store(JsonValueScope *scope) const {
+    auto object = scope->enter_object();
+    f_(object);
+  }
+
+ private:
+  F f_;
+};
+template <class F>
+auto json_object(F &&f) {
+  return JsonObjectImpl<F>(std::forward<F>(f));
+}
+
+template <class F>
+class JsonArrayImpl : Jsonable {
+ public:
+  explicit JsonArrayImpl(F &&f) : f_(std::forward<F>(f)) {
+  }
+  void store(JsonValueScope *scope) const {
+    auto array = scope->enter_array();
+    f_(array);
+  }
+
+ private:
+  F f_;
+};
+
+template <class F>
+auto json_array(F &&f) {
+  return JsonArrayImpl<F>(std::forward<F>(f));
+}
+
+template <class A, class F>
+auto json_array(const A &a, F &&f) {
+  return json_array([&a, &f](auto &arr) {
+    for (auto &x : a) {
+      arr(f(x));
+    }
+  });
 }
 
 bool has_json_object_field(JsonObject &object, Slice name);

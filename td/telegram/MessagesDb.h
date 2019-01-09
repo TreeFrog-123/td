@@ -22,7 +22,7 @@
 
 namespace td {
 // append only before Size
-enum class SearchMessagesFilter {
+enum class SearchMessagesFilter : int32 {
   Empty,
   Animation,
   Audio,
@@ -166,4 +166,4 @@ std::shared_ptr<MessagesDbSyncSafeInterface> create_messages_db_sync(
 
 std::shared_ptr<MessagesDbAsyncInterface> create_messages_db_async(std::shared_ptr<MessagesDbSyncSafeInterface> sync_db,
                                                                    int32 scheduler_id);
-};  // namespace td
+}  // namespace td

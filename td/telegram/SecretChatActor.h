@@ -43,9 +43,7 @@
 
 namespace td {
 class BinlogInterface;
-class DhCache;
 class NetQueryCreator;
-class SequenceDispatcher;
 
 class SecretChatActor : public NetQueryCallback {
  public:
@@ -136,10 +134,10 @@ class SecretChatActor : public NetQueryCallback {
   void binlog_replay_finish();
 
  private:
-  enum class State { Empty, SendRequest, SendAccept, WaitRequestResponse, WaitAcceptResponse, Ready, Closed };
-  enum { MAX_RESEND_COUNT = 1000 };
+  enum class State : int32 { Empty, SendRequest, SendAccept, WaitRequestResponse, WaitAcceptResponse, Ready, Closed };
+  static constexpr int32 MAX_RESEND_COUNT = 1000;
 
-  // We have git state that should be shynchronized with db.
+  // We have git state that should be synchronized with db.
   // It is splitted into several parts because:
   // 1. Some parts are BIG (auth_key, for example) and are rarely updated.
   // 2. Other are frequently updated, so probably should be as small as possible.
@@ -149,6 +147,7 @@ class SecretChatActor : public NetQueryCallback {
     int32 my_in_seq_no = 0;
     int32 my_out_seq_no = 0;
     int32 his_in_seq_no = 0;
+    int32 his_layer = 0;
 
     int32 resend_end_seq_no = -1;
 
@@ -157,11 +156,12 @@ class SecretChatActor : public NetQueryCallback {
     }
     template <class StorerT>
     void store(StorerT &storer) const {
-      storer.store_int(message_id);
+      storer.store_int(message_id | HAS_LAYER);
       storer.store_int(my_in_seq_no);
       storer.store_int(my_out_seq_no);
       storer.store_int(his_in_seq_no);
       storer.store_int(resend_end_seq_no);
+      storer.store_int(his_layer);
     }
 
     template <class ParserT>
@@ -171,7 +171,14 @@ class SecretChatActor : public NetQueryCallback {
       my_out_seq_no = parser.fetch_int();
       his_in_seq_no = parser.fetch_int();
       resend_end_seq_no = parser.fetch_int();
+
+      bool has_layer = (message_id & HAS_LAYER) != 0;
+      if (has_layer) {
+        message_id &= static_cast<int32>(~HAS_LAYER);
+        his_layer = parser.fetch_int();
+      }
     }
+    static constexpr uint32 HAS_LAYER = 1u << 31;
   };
 
   struct ConfigState {
@@ -198,15 +205,15 @@ class SecretChatActor : public NetQueryCallback {
       ttl = parser.fetch_int();
       bool has_flags = (his_layer & HAS_FLAGS) != 0;
       if (has_flags) {
-        his_layer &= ~HAS_FLAGS;
+        his_layer &= static_cast<int32>(~HAS_FLAGS);
         my_layer = parser.fetch_int();
         // for future usage
         BEGIN_PARSE_FLAGS();
-        END_PARSE_FLAGS();
+        END_PARSE_FLAGS_GENERIC();
       }
     }
 
-    enum { HAS_FLAGS = 1 << 31 };
+    static constexpr uint32 HAS_FLAGS = 1u << 31;
   };
 
   // PfsAction
@@ -436,13 +443,13 @@ class SecretChatActor : public NetQueryCallback {
 
   LogEvent::Id create_logevent_id_ = 0;
 
-  enum class QueryType : uint8 { DhConfig, EncryptedChat, Message, Ignore, DiscardEncryption };
+  enum class QueryType : uint8 { DhConfig, EncryptedChat, Message, Ignore, DiscardEncryption, ReadHistory };
 
   bool can_be_empty_;
   AuthState auth_state_;
   ConfigState config_state_;
 
-  // Turns out, that all changes should be made made through StateChange.
+  // Turns out, that all changes should be made through StateChange.
   //
   // The problem is the time between the moment we made decision about change and
   // the moment we actually apply the change to memory.
@@ -457,12 +464,12 @@ class SecretChatActor : public NetQueryCallback {
   // 2. We SEND CHANGE to db only after correspoiding EVENT is SAVED to the binlog.
   // 3. The we are able to ERASE EVENT just AFTER the CHANGE is SAVED to the binlog.
   //
-  // Actually the change will be saved do binlog too.
+  // Actually the change will be saved to binlog too.
   // So we can do it immidiatelly after EVENT is SENT to the binlog, because SEND CHANGE and ERASE EVENT will be
   // ordered automatically.
   //
   // We will use common ChangeProcessor for all changes (inside one SecretChatActor).
-  // So all changes will be saved in exactly the same order as they are applied
+  // So all changes will be saved in exactly the same order as they are applied.
 
   template <class StateT>
   class Change {
@@ -516,7 +523,7 @@ class SecretChatActor : public NetQueryCallback {
   bool seq_no_state_changed_ = false;
   int32 last_binlog_message_id_ = -1;
 
-  Status check_seq_no(int in_seq_no, int out_seq_no) TD_WARN_UNUSED_RESULT;
+  Status check_seq_no(int in_seq_no, int out_seq_no, int32 his_layer) TD_WARN_UNUSED_RESULT;
   void on_his_in_seq_no_updated();
 
   void on_seq_no_state_changed();
@@ -572,8 +579,11 @@ class SecretChatActor : public NetQueryCallback {
   Container<OutboundMessageState> outbound_message_states_;
 
   NetQueryRef set_typing_query_;
+  NetQueryRef read_history_query_;
+  int32 last_read_history_date_ = -1;
+  Promise<Unit> read_history_promise_;
 
-  enum SendFlag {
+  enum SendFlag : int32 {
     None = 0,
     External = 1,
     Push = 2,
@@ -648,6 +658,8 @@ class SecretChatActor : public NetQueryCallback {
 
   Status on_update_chat(NetQueryPtr query) TD_WARN_UNUSED_RESULT;
   Status on_update_chat(telegram_api::object_ptr<telegram_api::EncryptedChat> chat) TD_WARN_UNUSED_RESULT;
+
+  Status on_read_history(NetQueryPtr query) TD_WARN_UNUSED_RESULT;
 
   void on_promise_error(Status error, string desc);
 

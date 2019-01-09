@@ -50,13 +50,14 @@ Result<size_t> AuthKeyHandshake::fill_data_with_hash(uint8 *data_with_hash, cons
     return Status::Error("Too big data");
   }
   as<int32>(data_ptr) = data.get_id();
-  tl_store_unsafe(data, data_ptr + 4);
+  auto real_size = tl_store_unsafe(data, data_ptr + 4);
+  CHECK(real_size == data_size);
   sha1(Slice(data_ptr, data_size + 4), data_with_hash);
   return data_size + 20 + 4;
 }
 
 Status AuthKeyHandshake::on_res_pq(Slice message, Callback *connection, PublicRsaKeyInterface *public_rsa_key) {
-  TRY_RESULT(res_pq, fetch_result<mtproto_api::req_pq_multi>(message));
+  TRY_RESULT(res_pq, fetch_result<mtproto_api::req_pq_multi>(message, false));
   if (res_pq->nonce_ != nonce) {
     return Status::Error("Nonce mismatch");
   }
@@ -82,13 +83,13 @@ Status AuthKeyHandshake::on_res_pq(Slice message, Callback *connection, PublicRs
   Result<size_t> r_data_size = 0;
   switch (mode_) {
     case Mode::Main:
-      r_data_size = fill_data_with_hash(data_with_hash,
-                                        mtproto_api::p_q_inner_data(res_pq->pq_, p, q, nonce, server_nonce, new_nonce));
+      r_data_size = fill_data_with_hash(
+          data_with_hash, mtproto_api::p_q_inner_data_dc(res_pq->pq_, p, q, nonce, server_nonce, new_nonce, dc_id_));
       break;
     case Mode::Temp:
       r_data_size = fill_data_with_hash(
           data_with_hash,
-          mtproto_api::p_q_inner_data_temp(res_pq->pq_, p, q, nonce, server_nonce, new_nonce, expire_in_));
+          mtproto_api::p_q_inner_data_temp_dc(res_pq->pq_, p, q, nonce, server_nonce, new_nonce, dc_id_, expire_in_));
       expire_at_ = Time::now() + expire_in_;
       break;
     case Mode::Unknown:
@@ -108,7 +109,7 @@ Status AuthKeyHandshake::on_res_pq(Slice message, Callback *connection, PublicRs
 
   // req_DH_params#d712e4be nonce:int128 server_nonce:int128 p:string q:string public_key_fingerprint:long
   // encrypted_data:string = Server_DH_Params
-  mtproto_api::req_DH_params req_dh_params(nonce, server_nonce, p, q, rsa_fingerprint, std::move(encrypted_data));
+  mtproto_api::req_DH_params req_dh_params(nonce, server_nonce, p, q, rsa_fingerprint, encrypted_data);
 
   send(connection, create_storer(req_dh_params));
   state_ = ServerDHParams;
@@ -116,7 +117,7 @@ Status AuthKeyHandshake::on_res_pq(Slice message, Callback *connection, PublicRs
 }
 
 Status AuthKeyHandshake::on_server_dh_params(Slice message, Callback *connection, DhCallback *dh_callback) {
-  TRY_RESULT(server_dh_params, fetch_result<mtproto_api::req_DH_params>(message));
+  TRY_RESULT(server_dh_params, fetch_result<mtproto_api::req_DH_params>(message, false));
   switch (server_dh_params->get_id()) {
     case mtproto_api::server_DH_params_ok::ID:
       break;
@@ -170,8 +171,6 @@ Status AuthKeyHandshake::on_server_dh_params(Slice message, Callback *connection
     return Status::Error("SHA1 mismatch");
   }
 
-  // server_DH_inner_data#b5890dba nonce:int128 server_nonce:int128 g:int dh_prime:string g_a:string server_time:int =
-  // Server_DH_inner_data;
   if (dh_inner_data.nonce_ != nonce) {
     return Status::Error("Nonce mismatch");
   }
@@ -181,10 +180,12 @@ Status AuthKeyHandshake::on_server_dh_params(Slice message, Callback *connection
 
   server_time_diff = dh_inner_data.server_time_ - Time::now();
 
-  string g_b;
-  string auth_key_str;
-  TRY_STATUS(
-      dh_handshake(dh_inner_data.g_, dh_inner_data.dh_prime_, dh_inner_data.g_a_, &g_b, &auth_key_str, dh_callback));
+  DhHandshake handshake;
+  handshake.set_config(dh_inner_data.g_, dh_inner_data.dh_prime_);
+  handshake.set_g_a(dh_inner_data.g_a_);
+  TRY_STATUS(handshake.run_checks(false, dh_callback));
+  string g_b = handshake.get_g_b();
+  auto auth_key_params = handshake.gen_key();
 
   mtproto_api::client_DH_inner_data data(nonce, server_nonce, 0, g_b);
   size_t data_size = 4 + tl_calc_length(data);
@@ -193,17 +194,18 @@ Status AuthKeyHandshake::on_server_dh_params(Slice message, Callback *connection
   string encrypted_data_str(encrypted_data_size_with_pad, 0);
   MutableSlice encrypted_data = encrypted_data_str;
   as<int32>(encrypted_data.begin() + 20) = data.get_id();
-  tl_store_unsafe(data, encrypted_data.begin() + 20 + 4);
+  auto real_size = tl_store_unsafe(data, encrypted_data.ubegin() + 20 + 4);
+  CHECK(real_size + 4 == data_size);
   sha1(Slice(encrypted_data.ubegin() + 20, data_size), encrypted_data.ubegin());
   Random::secure_bytes(encrypted_data.ubegin() + encrypted_data_size,
                        encrypted_data_size_with_pad - encrypted_data_size);
   tmp_KDF(server_nonce, new_nonce, &tmp_aes_key, &tmp_aes_iv);
   aes_ige_encrypt(tmp_aes_key, &tmp_aes_iv, encrypted_data, encrypted_data);
 
-  mtproto_api::set_client_DH_params set_client_dh_params(nonce, server_nonce, std::move(encrypted_data_str));
+  mtproto_api::set_client_DH_params set_client_dh_params(nonce, server_nonce, encrypted_data);
   send(connection, create_storer(set_client_dh_params));
 
-  auth_key = AuthKey(dh_auth_key_id(auth_key_str), std::move(auth_key_str));
+  auth_key = AuthKey(auth_key_params.first, std::move(auth_key_params.second));
   if (mode_ == Mode::Temp) {
     auth_key.set_expire_at(expire_at_);
   }
@@ -215,7 +217,7 @@ Status AuthKeyHandshake::on_server_dh_params(Slice message, Callback *connection
 }
 
 Status AuthKeyHandshake::on_dh_gen_response(Slice message, Callback *connection) {
-  TRY_RESULT(answer, fetch_result<mtproto_api::set_client_DH_params>(message));
+  TRY_RESULT(answer, fetch_result<mtproto_api::set_client_DH_params>(message, false));
   switch (answer->get_id()) {
     case mtproto_api::dh_gen_ok::ID:
       state_ = Finish;
@@ -229,12 +231,16 @@ Status AuthKeyHandshake::on_dh_gen_response(Slice message, Callback *connection)
   }
   return Status::OK();
 }
+
 void AuthKeyHandshake::send(Callback *connection, const Storer &storer) {
-  auto writer = BufferWriter{storer.size(), 0, 0};
-  storer.store(writer.as_slice().ubegin());
+  auto size = storer.size();
+  auto writer = BufferWriter{size, 0, 0};
+  auto real_size = storer.store(writer.as_slice().ubegin());
+  CHECK(real_size == size);
   last_query_ = writer.as_buffer_slice();
   return do_send(connection, create_storer(last_query_.as_slice()));
 }
+
 void AuthKeyHandshake::do_send(Callback *connection, const Storer &storer) {
   return connection->send_no_crypto(storer);
 }

@@ -15,6 +15,7 @@
 #include "td/telegram/files/FileLocation.h"
 #include "td/telegram/files/FileUploader.h"
 #include "td/telegram/files/ResourceManager.h"
+#include "td/telegram/net/DcId.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/Container.h"
@@ -36,6 +37,7 @@ class FileLoadManager final : public Actor {
     virtual void on_start_download(QueryId id) = 0;
     virtual void on_partial_download(QueryId id, const PartialLocalFileLocation &partial_local, int64 ready_size) = 0;
     virtual void on_partial_upload(QueryId id, const PartialRemoteFileLocation &partial_remote, int64 ready_size) = 0;
+    virtual void on_hash(QueryId id, string hash) = 0;
     virtual void on_upload_ok(QueryId id, FileType file_type, const PartialRemoteFileLocation &remtoe, int64 size) = 0;
     virtual void on_upload_full_ok(QueryId id, const FullRemoteFileLocation &remote) = 0;
     virtual void on_download_ok(QueryId id, const FullLocalFileLocation &local, int64 size) = 0;
@@ -53,9 +55,6 @@ class FileLoadManager final : public Actor {
   void cancel(QueryId id);
   void update_local_file_location(QueryId id, const LocalFileLocation &local);
   void get_content(const FullLocalFileLocation &local_location, Promise<BufferSlice> promise);
-
-  // just stops actor and all queries. no callbacks will be called
-  void close();
 
  private:
   struct Node {
@@ -77,6 +76,7 @@ class FileLoadManager final : public Actor {
 
   void start_up() override;
   void loop() override;
+  void hangup() override;
   void hangup_shared() override;
 
   void close_node(NodeId node_id);
@@ -85,6 +85,7 @@ class FileLoadManager final : public Actor {
   void on_start_download();
   void on_partial_download(const PartialLocalFileLocation &partial_local, int64 ready_size);
   void on_partial_upload(const PartialRemoteFileLocation &partial_remote, int64 ready_size);
+  void on_hash(string hash);
   void on_ok_download(const FullLocalFileLocation &local, int64 size);
   void on_ok_upload(FileType file_type, const PartialRemoteFileLocation &remote, int64 size);
   void on_ok_upload_full(const FullRemoteFileLocation &remote);
@@ -121,6 +122,9 @@ class FileLoadManager final : public Actor {
    private:
     ActorShared<FileLoadManager> actor_id_;
 
+    void on_hash(string hash) override {
+      send_closure(actor_id_, &FileLoadManager::on_hash, std::move(hash));
+    }
     void on_partial_upload(const PartialRemoteFileLocation &partial_remote, int64 ready_size) override {
       send_closure(actor_id_, &FileLoadManager::on_partial_upload, partial_remote, ready_size);
     }

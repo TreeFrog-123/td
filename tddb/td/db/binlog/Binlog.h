@@ -34,7 +34,7 @@ namespace detail {
 class BinlogReader;
 class BinlogEventsProcessor;
 class BinlogEventsBuffer;
-};  // namespace detail
+}  // namespace detail
 
 class Binlog {
  public:
@@ -67,8 +67,12 @@ class Binlog {
     return fd_.empty();
   }
 
-  void add_raw_event(BufferSlice &&raw_event) {
-    add_event(BinlogEvent(std::move(raw_event)));
+  //void add_raw_event(BufferSlice &&raw_event) {
+  //add_event(BinlogEvent(std::move(raw_event)));
+  //}
+
+  void add_raw_event(BufferSlice &&raw_event, BinlogDebugInfo info) {
+    add_event(BinlogEvent(std::move(raw_event), info));
   }
 
   void add_event(BinlogEvent &&event);

@@ -7,7 +7,7 @@ If you need only a macOS build, take a look at our build instructions for [macOS
 For example of usage take a look at our [Swift example](https://github.com/tdlib/td/tree/master/example/swift).
 
 To compile `TDLib` you will need to:
-* Install the latest Xcode command line tools.
+* Install the latest Xcode command line tools, for example, via `xcode-select --install`.
 * Install other build dependencies, for example, using [Homebrew](https://brew.sh):
 ```
 brew install gperf cmake
@@ -33,7 +33,7 @@ cd <path to TDLib sources>/example/ios
 ./build.sh
 ```
 This may take a while, because TDLib will be built about 10 times.
-Resulting library for iOS will work on any architecture (arv7, armv7s, arm64) and even on a simulator.
+Resulting library for iOS will work on any architecture (armv7, armv7s, arm64) and even on a simulator.
 We use [CMake/iOS.cmake](https://github.com/tdlib/td/blob/master/CMake/iOS.cmake) toolchain, other toolchains may work too.
 
 Built libraries will be store in `tdjson` directory.

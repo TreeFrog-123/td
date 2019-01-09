@@ -55,9 +55,12 @@ class DhCallback {
   virtual void add_good_prime(Slice prime_str) const = 0;
   virtual void add_bad_prime(Slice prime_str) const = 0;
 };
+
 class DhHandshake {
  public:
   void set_config(int32 g_int, Slice prime_str);
+
+  static Status check_config(int32 g_int, Slice prime_str, DhCallback *callback);
 
   bool has_config() const {
     return has_config_;
@@ -70,7 +73,12 @@ class DhHandshake {
   string get_g_a() const;
   string get_g_b() const;
   string get_g_b_hash() const;
-  Status run_checks(DhCallback *callback) TD_WARN_UNUSED_RESULT;
+  Status run_checks(bool skip_config_check, DhCallback *callback) TD_WARN_UNUSED_RESULT;
+
+  BigNum get_g() const;
+  BigNum get_p() const;
+  BigNum get_b() const;
+  BigNum get_g_ab();
 
   std::pair<int64, string> gen_key();
 
@@ -127,8 +135,10 @@ class DhHandshake {
   }
 
  private:
-  static Status dh_check(Slice prime_str, const BigNum &prime, int32 g_int, const BigNum &g_a, const BigNum &g_b,
-                         BigNumContext &ctx, DhCallback *callback) TD_WARN_UNUSED_RESULT;
+  static Status check_config(Slice prime_str, const BigNum &prime, int32 g_int, BigNumContext &ctx,
+                             DhCallback *callback) TD_WARN_UNUSED_RESULT;
+
+  static Status dh_check(const BigNum &prime, const BigNum &g_a, const BigNum &g_b) TD_WARN_UNUSED_RESULT;
 
   string prime_str_;
   BigNum prime_;
@@ -148,13 +158,9 @@ class DhHandshake {
   BigNumContext ctx_;
 };
 
-// TODO: remove this legacy functions
-Status dh_handshake(int g_int, Slice prime_str, Slice g_a_str, string *g_b_str, string *g_ab_str,
-                    DhCallback *callback) TD_WARN_UNUSED_RESULT;
-int64 dh_auth_key_id(const string &auth_key);
-
 /*** KDF ***/
 void KDF(const string &auth_key, const UInt128 &msg_key, int X, UInt256 *aes_key, UInt256 *aes_iv);
 void tmp_KDF(const UInt128 &server_nonce, const UInt256 &new_nonce, UInt256 *tmp_aes_key, UInt256 *tmp_aes_iv);
 void KDF2(Slice auth_key, const UInt128 &msg_key, int X, UInt256 *aes_key, UInt256 *aes_iv);
+
 }  // namespace td

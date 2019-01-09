@@ -6,9 +6,6 @@
 //
 #pragma once
 
-#include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
-
 #include "td/telegram/files/FileLoader.h"
 #include "td/telegram/files/FileLocation.h"
 
@@ -22,6 +19,7 @@ class FileUploader : public FileLoader {
  public:
   class Callback : public FileLoader::Callback {
    public:
+    virtual void on_hash(string hash) = 0;
     virtual void on_partial_upload(const PartialRemoteFileLocation &partial_remote, int64 ready_size) = 0;
     virtual void on_ok(FileType file_type, const PartialRemoteFileLocation &partial_remote, int64 size) = 0;
     virtual void on_error(Status status) = 0;
@@ -52,6 +50,7 @@ class FileUploader : public FileLoader {
 
   FileFd fd_;
   string fd_path_;
+  bool is_temp_ = false;
   int64 file_id_;
   bool big_flag_;
 

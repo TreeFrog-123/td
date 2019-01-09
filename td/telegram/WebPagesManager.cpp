@@ -9,10 +9,6 @@
 #include "td/telegram/secret_api.h"
 #include "td/telegram/telegram_api.hpp"
 
-#include "td/actor/PromiseFuture.h"
-
-#include "td/db/binlog/BinlogHelper.h"
-
 #include "td/telegram/AnimationsManager.h"
 #include "td/telegram/AnimationsManager.hpp"
 #include "td/telegram/AudiosManager.h"
@@ -32,12 +28,18 @@
 #include "td/telegram/StickersManager.h"
 #include "td/telegram/StickersManager.hpp"
 #include "td/telegram/Td.h"
+#include "td/telegram/Version.h"
 #include "td/telegram/VideoNotesManager.h"
 #include "td/telegram/VideoNotesManager.hpp"
 #include "td/telegram/VideosManager.h"
 #include "td/telegram/VideosManager.hpp"
 #include "td/telegram/VoiceNotesManager.h"
 #include "td/telegram/VoiceNotesManager.hpp"
+
+#include "td/actor/PromiseFuture.h"
+
+#include "td/db/binlog/BinlogHelper.h"
+#include "td/db/SqliteKeyValueAsync.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/logging.h"
@@ -1411,7 +1413,7 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
       if (web_page_to_delete != nullptr) {
         if (web_page_to_delete->logevent_id != 0) {
           LOG(INFO) << "Erase " << web_page_id << " from binlog";
-          BinlogHelper::erase(G()->td_db()->get_binlog(), web_page_to_delete->logevent_id);
+          binlog_erase(G()->td_db()->get_binlog(), web_page_to_delete->logevent_id);
           web_page_to_delete->logevent_id = 0;
         }
         web_pages_.erase(web_page_id);
@@ -1714,8 +1716,8 @@ int64 WebPagesManager::get_web_page_preview(td_api::object_ptr<td_api::formatted
     promise.set_value(Unit());
   } else {
     td_->create_handler<GetWebPagePreviewQuery>(std::move(promise))
-        ->send(text->text_, get_input_message_entities(td_->contacts_manager_.get(), entities), request_id,
-               std::move(url));
+        ->send(text->text_, get_input_message_entities(td_->contacts_manager_.get(), entities, "get_web_page_preview"),
+               request_id, std::move(url));
   }
   return request_id;
 }
@@ -1732,10 +1734,16 @@ tl_object_ptr<td_api::webPage> WebPagesManager::get_web_page_preview_result(int6
   return get_web_page_object(web_page_id);
 }
 
-WebPageId WebPagesManager::get_web_page_instant_view(const string &url, bool force_full, Promise<Unit> &&promise) {
+WebPageId WebPagesManager::get_web_page_instant_view(const string &url, bool force_full, bool force,
+                                                     Promise<Unit> &&promise) {
   LOG(INFO) << "Trying to get web page instant view for the url \"" << url << '"';
   auto it = url_to_web_page_id_.find(url);
   if (it != url_to_web_page_id_.end()) {
+    if (it->second == WebPageId() && !force) {
+      // ignore negative caching
+      reload_web_page_by_url(url, std::move(promise));
+      return WebPageId();
+    }
     return get_web_page_instant_view(it->second, force_full, std::move(promise));
   }
 
@@ -1766,7 +1774,7 @@ WebPageId WebPagesManager::get_web_page_instant_view(WebPageId web_page_id, bool
 }
 
 string WebPagesManager::get_web_page_instant_view_database_key(WebPageId web_page_id) {
-  return "wpiv" + to_string(web_page_id.get());
+  return PSTRING() << "wpiv" << web_page_id.get();
 }
 
 void WebPagesManager::load_web_page_instant_view(WebPageId web_page_id, bool force_full, Promise<Unit> &&promise) {
@@ -2629,9 +2637,9 @@ void WebPagesManager::save_web_page(WebPage *web_page, WebPageId web_page_id, bo
     WebPageLogEvent logevent(web_page_id, web_page);
     LogEventStorerImpl<WebPageLogEvent> storer(logevent);
     if (web_page->logevent_id == 0) {
-      web_page->logevent_id = BinlogHelper::add(G()->td_db()->get_binlog(), LogEvent::HandlerType::WebPages, storer);
+      web_page->logevent_id = binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::WebPages, storer);
     } else {
-      BinlogHelper::rewrite(G()->td_db()->get_binlog(), web_page->logevent_id, LogEvent::HandlerType::WebPages, storer);
+      binlog_rewrite(G()->td_db()->get_binlog(), web_page->logevent_id, LogEvent::HandlerType::WebPages, storer);
     }
   }
 
@@ -2650,7 +2658,7 @@ string WebPagesManager::get_web_page_url_database_key(const string &url) {
 
 void WebPagesManager::on_binlog_web_page_event(BinlogEvent &&event) {
   if (!G()->parameters().use_message_db) {
-    BinlogHelper::erase(G()->td_db()->get_binlog(), event.id_);
+    binlog_erase(G()->td_db()->get_binlog(), event.id_);
     return;
   }
 
@@ -2668,7 +2676,7 @@ void WebPagesManager::on_binlog_web_page_event(BinlogEvent &&event) {
 }
 
 string WebPagesManager::get_web_page_database_key(WebPageId web_page_id) {
-  return "wp" + to_string(web_page_id.get());
+  return PSTRING() << "wp" << web_page_id.get();
 }
 
 void WebPagesManager::on_save_web_page_to_database(WebPageId web_page_id, bool success) {
@@ -2685,7 +2693,7 @@ void WebPagesManager::on_save_web_page_to_database(WebPageId web_page_id, bool s
     LOG(INFO) << "Successfully saved " << web_page_id << " to database";
     if (web_page->logevent_id != 0) {
       LOG(INFO) << "Erase " << web_page_id << " from binlog";
-      BinlogHelper::erase(G()->td_db()->get_binlog(), web_page->logevent_id);
+      binlog_erase(G()->td_db()->get_binlog(), web_page->logevent_id);
       web_page->logevent_id = 0;
     }
   }

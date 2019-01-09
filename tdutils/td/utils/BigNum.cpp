@@ -85,10 +85,12 @@ BigNum BigNum::from_binary(Slice str) {
   return BigNum(make_unique<Impl>(BN_bin2bn(str.ubegin(), narrow_cast<int>(str.size()), nullptr)));
 }
 
-BigNum BigNum::from_decimal(CSlice str) {
+Result<BigNum> BigNum::from_decimal(CSlice str) {
   BigNum result;
-  int err = BN_dec2bn(&result.impl_->big_num, str.c_str());
-  LOG_IF(FATAL, err == 0);
+  int res = BN_dec2bn(&result.impl_->big_num, str.c_str());
+  if (res == 0 || static_cast<size_t>(res) != str.size()) {
+    return Status::Error(PSLICE() << "Failed to parse \"" << str << "\" as BigNum");
+  }
   return result;
 }
 
@@ -220,6 +222,11 @@ void BigNum::mod_mul(BigNum &r, BigNum &a, BigNum &b, const BigNum &m, BigNumCon
   LOG_IF(FATAL, result != 1);
 }
 
+void BigNum::mod_inv(BigNum &r, BigNum &a, const BigNum &m, BigNumContext &context) {
+  BIGNUM *result = BN_mod_inverse(r.impl_->big_num, a.impl_->big_num, m.impl_->big_num, context.impl_->big_num_context);
+  LOG_IF(FATAL, result == nullptr);
+}
+
 void BigNum::div(BigNum *quotient, BigNum *remainder, const BigNum &dividend, const BigNum &divisor,
                  BigNumContext &context) {
   auto q = quotient == nullptr ? nullptr : quotient->impl_->big_num;
@@ -245,6 +252,10 @@ void BigNum::gcd(BigNum &r, BigNum &a, BigNum &b, BigNumContext &context) {
 
 int BigNum::compare(const BigNum &a, const BigNum &b) {
   return BN_cmp(a.impl_->big_num, b.impl_->big_num);
+}
+
+StringBuilder &operator<<(StringBuilder &sb, const BigNum &bn) {
+  return sb << bn.to_decimal();
 }
 
 }  // namespace td

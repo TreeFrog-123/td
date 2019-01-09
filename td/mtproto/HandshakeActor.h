@@ -12,7 +12,6 @@
 #include "td/utils/Status.h"
 
 namespace td {
-class DhCallback;
 namespace mtproto {
 class AuthKeyHandshake;
 class AuthKeyHandshakeContext;
@@ -38,6 +37,10 @@ class HandshakeActor : public Actor {
   void start_up() override;
   void tear_down() override {
     finish(Status::OK());
+  }
+  void hangup() override {
+    finish(Status::Error(1, "Cancelled"));
+    stop();
   }
   void timeout_expired() override {
     finish(Status::Error("Timeout expired"));

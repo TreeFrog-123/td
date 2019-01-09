@@ -4,6 +4,7 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
+#include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
 #include "td/db/binlog/detail/BinlogEventsProcessor.h"
@@ -426,8 +427,8 @@ class FakeBinlog
   }
   void close_and_destroy_impl(Promise<> promise) override {
   }
-  void add_raw_event_impl(uint64 id, BufferSlice &&raw_event, Promise<> promise) override {
-    auto event = BinlogEvent(std::move(raw_event));
+  void add_raw_event_impl(uint64 id, BufferSlice &&raw_event, Promise<> promise, BinlogDebugInfo info) override {
+    auto event = BinlogEvent(std::move(raw_event), info);
     LOG(INFO) << "ADD EVENT: " << event.id_ << " " << event;
     pending_events_.emplace_back();
     pending_events_.back().event = std::move(event);
@@ -447,7 +448,7 @@ class FakeBinlog
       auto event = std::move(pending.event);
       if (!event.empty()) {
         LOG(INFO) << "SAVE EVENT: " << event.id_ << " " << event;
-        events_processor_.add_event(std::move(event));
+        events_processor_.add_event(std::move(event)).ensure();
       }
       append(promises, std::move(pending.promises_));
     }
@@ -615,7 +616,7 @@ class Master : public Actor {
       parent_ = parent.get();
       parent_token_ = parent.token();
       actor_ = create_actor<SecretChatActor>(
-          "SecretChat " + name_, 123,
+          PSLICE() << "SecretChat " << name_, 123,
           std::make_unique<FakeSecretChatContext>(binlog_, key_value_, close_flag_, std::move(parent)), true);
       on_binlog_replay_finish();
     }
@@ -697,7 +698,7 @@ class Master : public Actor {
       key_value_->external_init_finish(binlog_);
 
       actor_ = create_actor<SecretChatActor>(
-          "SecretChat " + name_, 123,
+          PSLICE() << "SecretChat " << name_, 123,
           std::make_unique<FakeSecretChatContext>(binlog_, key_value_, close_flag_,
                                                   ActorShared<Master>(parent_, parent_token_)),
           true);
@@ -866,7 +867,8 @@ class Master : public Actor {
     config.version_ = 12;
     auto storer = TLObjectStorer<my_api::messages_dhConfig>(config);
     BufferSlice answer(storer.size());
-    storer.store(answer.as_slice().ubegin());
+    auto real_size = storer.store(answer.as_slice().ubegin());
+    CHECK(real_size == answer.size());
     net_query->set_ok(std::move(answer));
     send_closure(std::move(callback), &NetQueryCallback::on_result, std::move(net_query));
   }
@@ -890,7 +892,8 @@ class Master : public Actor {
     my_api::encryptedChat encrypted_chat(123, 321, 0, 1, 2, BufferSlice(), request_encryption.key_fingerprint_);
     auto storer = TLObjectStorer<my_api::encryptedChat>(encrypted_chat);
     BufferSlice answer(storer.size());
-    storer.store(answer.as_slice().ubegin());
+    auto real_size = storer.store(answer.as_slice().ubegin());
+    CHECK(real_size == answer.size());
     net_query->set_ok(std::move(answer));
     send_closure(std::move(callback), &NetQueryCallback::on_result, std::move(net_query));
     send_closure(alice_, &SecretChatProxy::start_test);
@@ -934,7 +937,8 @@ class Master : public Actor {
     sent_message.date_ = 0;
     auto storer = TLObjectStorer<my_api::messages_sentEncryptedMessage>(sent_message);
     BufferSlice answer(storer.size());
-    storer.store(answer.as_slice().ubegin());
+    auto real_size = storer.store(answer.as_slice().ubegin());
+    CHECK(real_size == answer.size());
     net_query->set_ok(std::move(answer));
     send_closure(std::move(callback), &NetQueryCallback::on_result, std::move(net_query));
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2 FATAL_ERROR)
 
-project(TDLib VERSION 1.2.0 LANGUAGES CXX C)
+project(TDLib VERSION 1.3.0 LANGUAGES CXX C)
 
 # Prevent in-source build
 get_filename_component(TD_REAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
@@ -82,8 +82,8 @@ if (EMSCRIPTEN)
   set(ZLIB_LIBRARIES)
   set(ZLIB_INCLUDE_DIR)
 
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s WEBSOCKET_URL=\"'wss:#'\" -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s WEBSOCKET_URL=\"'wss:#'\" -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -s DEMANGLE_SUPPORT=1 -s ASSERTIONS=1")
   set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -s DEMANGLE_SUPPORT=1 -s ASSERTIONS=1")
 
@@ -117,14 +117,14 @@ include(CheckCXXCompilerFlag)
 
 if (GCC OR CLANG OR INTEL)
   if (WIN32 AND INTEL)
-    SET(STD14_FLAG /Qstd=c++14)
+    set(STD14_FLAG /Qstd=c++14)
   else()
-    SET(STD14_FLAG -std=c++14)
+    set(STD14_FLAG -std=c++14)
   endif()
-  CHECK_CXX_COMPILER_FLAG(${STD14_FLAG} HAVE_STD14)
+  check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD14)
   if (NOT HAVE_STD14)
     string(REPLACE "c++14" "c++1y" STD14_FLAG "${STD14_FLAG}")
-    CHECK_CXX_COMPILER_FLAG(${STD14_FLAG} HAVE_STD1Y)
+    check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD1Y)
     set(HAVE_STD14 ${HAVE_STD1Y})
   endif()
 elseif (MSVC)
@@ -148,7 +148,7 @@ if (MSVC)
     string(REPLACE "/RTC1" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
   endif()
   add_definitions(-D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4702")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8 /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4702")
 elseif (CLANG OR GCC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD14_FLAG} -fno-omit-frame-pointer -fno-exceptions -fno-rtti")
   if (APPLE)
@@ -160,7 +160,7 @@ elseif (CLANG OR GCC)
   endif()
 
   if (MEMPROF)
-    CHECK_CXX_COMPILER_FLAG(-no-pie CXX_NO_PIE_FLAG)
+    check_cxx_compiler_flag(-no-pie CXX_NO_PIE_FLAG)
     if (CXX_NO_PIE_FLAG)
       set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie")
     elseif (APPLE)
@@ -202,6 +202,7 @@ if (NOT MSVC)
   add_cxx_compiler_flag("-Wconversion")
   add_cxx_compiler_flag("-Wno-sign-conversion")
   add_cxx_compiler_flag("-Wc++14-compat-pedantic")
+  add_cxx_compiler_flag("-Wdeprecated")
   add_cxx_compiler_flag("-Qunused-arguments")
   add_cxx_compiler_flag("-Wodr")
   add_cxx_compiler_flag("-flto-odr-type-merging")
@@ -370,6 +371,7 @@ set(TDLIB_SOURCE
   td/telegram/Global.cpp
   td/telegram/HashtagHints.cpp
   td/telegram/InlineQueriesManager.cpp
+  td/telegram/LanguagePackManager.cpp
   td/telegram/Location.cpp
   td/telegram/MessageEntity.cpp
   td/telegram/MessagesDb.cpp
@@ -400,12 +402,16 @@ set(TDLIB_SOURCE
   td/telegram/SecretChatActor.cpp
   td/telegram/SecretChatDb.cpp
   td/telegram/SecretChatsManager.cpp
+  td/telegram/SecureManager.cpp
+  td/telegram/SecureStorage.cpp
+  td/telegram/SecureValue.cpp
   td/telegram/SequenceDispatcher.cpp
   td/telegram/StateManager.cpp
   td/telegram/StickersManager.cpp
   td/telegram/StorageManager.cpp
   td/telegram/Td.cpp
   td/telegram/TdDb.cpp
+  td/telegram/TermsOfService.cpp
   td/telegram/TopDialogManager.cpp
   td/telegram/UpdatesManager.cpp
   td/telegram/VideoNotesManager.cpp
@@ -479,8 +485,10 @@ set(TDLIB_SOURCE
   td/telegram/Global.h
   td/telegram/HashtagHints.h
   td/telegram/InlineQueriesManager.h
+  td/telegram/LanguagePackManager.h
   td/telegram/Location.h
   td/telegram/logevent/LogEvent.h
+  td/telegram/logevent/LogEventHelper.h
   td/telegram/logevent/SecretChatEvent.h
   td/telegram/MessageEntity.h
   td/telegram/MessageId.h
@@ -519,6 +527,9 @@ set(TDLIB_SOURCE
   td/telegram/SecretChatDb.h
   td/telegram/SecretChatsManager.h
   td/telegram/SecretInputMedia.h
+  td/telegram/SecureManager.h
+  td/telegram/SecureStorage.h
+  td/telegram/SecureValue.h
   td/telegram/SequenceDispatcher.h
   td/telegram/StateManager.h
   td/telegram/StickersManager.h
@@ -527,6 +538,7 @@ set(TDLIB_SOURCE
   td/telegram/TdCallback.h
   td/telegram/TdDb.h
   td/telegram/TdParameters.h
+  td/telegram/TermsOfService.h
   td/telegram/TopDialogManager.h
   td/telegram/UniqueId.h
   td/telegram/UpdatesManager.h
@@ -545,9 +557,11 @@ set(TDLIB_SOURCE
   td/telegram/files/FileId.hpp
   td/telegram/files/FileManager.hpp
   td/telegram/Game.hpp
+  td/telegram/MessageEntity.hpp
   td/telegram/Payments.hpp
   td/telegram/Photo.hpp
   td/telegram/ReplyMarkup.hpp
+  td/telegram/SecureValue.hpp
   td/telegram/StickersManager.hpp
   td/telegram/VideoNotesManager.hpp
   td/telegram/VideosManager.hpp

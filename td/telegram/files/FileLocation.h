@@ -11,6 +11,7 @@
 
 #include "td/telegram/DialogId.h"
 #include "td/telegram/net/DcId.h"
+#include "td/telegram/SecureStorage.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
@@ -25,7 +26,6 @@
 #include "td/utils/tl_storers.h"
 #include "td/utils/Variant.h"
 
-#include <cstring>
 #include <tuple>
 
 namespace td {
@@ -45,6 +45,8 @@ enum class FileType : int8 {
   EncryptedThumbnail,
   Wallpaper,
   VideoNote,
+  SecureRaw,
+  Secure,
   Size,
   None
 };
@@ -79,6 +81,8 @@ inline FileType from_td_api(const td_api::FileType &file_type) {
       return FileType::Wallpaper;
     case td_api::fileTypeVideoNote::ID:
       return FileType::VideoNote;
+    case td_api::fileTypeSecure::ID:
+      return FileType::Secure;
     case td_api::fileTypeNone::ID:
       return FileType::None;
     default:
@@ -117,6 +121,11 @@ inline tl_object_ptr<td_api::FileType> as_td_api(FileType file_type) {
       return make_tl_object<td_api::fileTypeWallpaper>();
     case FileType::VideoNote:
       return make_tl_object<td_api::fileTypeVideoNote>();
+    case FileType::Secure:
+      return make_tl_object<td_api::fileTypeSecure>();
+    case FileType::SecureRaw:
+      UNREACHABLE();
+      return make_tl_object<td_api::fileTypeSecure>();
     case FileType::None:
       return make_tl_object<td_api::fileTypeNone>();
     default:
@@ -135,6 +144,8 @@ inline FileDirType get_file_dir_type(FileType file_type) {
     case FileType::Temp:
     case FileType::Wallpaper:
     case FileType::EncryptedThumbnail:
+    case FileType::Secure:
+    case FileType::SecureRaw:
       return FileDirType::Secure;
     default:
       return FileDirType::Common;
@@ -145,42 +156,84 @@ constexpr int32 file_type_size = static_cast<int32>(FileType::Size);
 extern const char *file_type_name[file_type_size];
 
 struct FileEncryptionKey {
+  enum class Type : int32 { None, Secret, Secure };
   FileEncryptionKey() = default;
-  FileEncryptionKey(Slice key, Slice iv) : key_iv_(key.size() + iv.size(), '\0') {
+  FileEncryptionKey(Slice key, Slice iv) : key_iv_(key.size() + iv.size(), '\0'), type_(Type::Secret) {
     if (key.size() != 32 || iv.size() != 32) {
       LOG(ERROR) << "Wrong key/iv sizes: " << key.size() << " " << iv.size();
+      type_ = Type::None;
       return;
     }
     CHECK(key_iv_.size() == 64);
-    std::memcpy(&key_iv_[0], key.data(), key.size());
-    std::memcpy(&key_iv_[key.size()], iv.data(), iv.size());
+    MutableSlice(key_iv_).copy_from(key);
+    MutableSlice(key_iv_).substr(key.size()).copy_from(iv);
   }
+
+  explicit FileEncryptionKey(const secure_storage::Secret &secret) : type_(Type::Secure) {
+    key_iv_ = secret.as_slice().str();
+  }
+
+  bool is_secret() const {
+    return type_ == Type::Secret;
+  }
+  bool is_secure() const {
+    return type_ == Type::Secure;
+  }
+
   static FileEncryptionKey create() {
     FileEncryptionKey res;
     res.key_iv_.resize(64);
     Random::secure_bytes(res.key_iv_);
+    res.type_ = Type::Secret;
     return res;
+  }
+  static FileEncryptionKey create_secure_key() {
+    return FileEncryptionKey(secure_storage::Secret::create_new());
   }
 
   const UInt256 &key() const {
+    CHECK(is_secret());
     CHECK(key_iv_.size() == 64);
     return *reinterpret_cast<const UInt256 *>(key_iv_.data());
   }
   Slice key_slice() const {
+    CHECK(is_secret());
     CHECK(key_iv_.size() == 64);
     return Slice(key_iv_.data(), 32);
   }
+  secure_storage::Secret secret() const {
+    CHECK(is_secure());
+    return secure_storage::Secret::create(Slice(key_iv_).truncate(32)).move_as_ok();
+  }
+
+  bool has_value_hash() const {
+    CHECK(is_secure());
+    return key_iv_.size() > secure_storage::Secret::size();
+  }
+
+  void set_value_hash(const secure_storage::ValueHash &value_hash) {
+    key_iv_.resize(secure_storage::Secret::size() + value_hash.as_slice().size());
+    MutableSlice(key_iv_).remove_prefix(secure_storage::Secret::size()).copy_from(value_hash.as_slice());
+  }
+
+  secure_storage::ValueHash value_hash() const {
+    CHECK(has_value_hash());
+    return secure_storage::ValueHash::create(Slice(key_iv_).remove_prefix(secure_storage::Secret::size())).move_as_ok();
+  }
 
   UInt256 &mutable_iv() {
+    CHECK(is_secret());
     CHECK(key_iv_.size() == 64);
     return *reinterpret_cast<UInt256 *>(&key_iv_[0] + 32);
   }
   Slice iv_slice() const {
+    CHECK(is_secret());
     CHECK(key_iv_.size() == 64);
     return Slice(key_iv_.data() + 32, 32);
   }
 
   int32 calc_fingerprint() const {
+    CHECK(is_secret());
     char buf[16];
     md5(key_iv_, {buf, sizeof(buf)});
     return as<int32>(buf) ^ as<int32>(buf + 4);
@@ -189,17 +242,31 @@ struct FileEncryptionKey {
   bool empty() const {
     return key_iv_.empty();
   }
+  size_t size() const {
+    return key_iv_.size();
+  }
 
   template <class StorerT>
   void store(StorerT &storer) const {
     td::store(key_iv_, storer);
   }
   template <class ParserT>
-  void parse(ParserT &parser) {
+  void parse(Type type, ParserT &parser) {
     td::parse(key_iv_, parser);
+    if (key_iv_.empty()) {
+      type_ = Type::None;
+    } else {
+      if (type_ == Type::Secure) {
+        if (key_iv_.size() != 64) {
+          LOG(ERROR) << "Have wrong key size " << key_iv_.size();
+        }
+      }
+      type_ = type;
+    }
   }
 
   string key_iv_;  // TODO wrong alignment is possible
+  Type type_ = Type::None;
 };
 
 inline bool operator==(const FileEncryptionKey &lhs, const FileEncryptionKey &rhs) {
@@ -208,6 +275,16 @@ inline bool operator==(const FileEncryptionKey &lhs, const FileEncryptionKey &rh
 
 inline bool operator!=(const FileEncryptionKey &lhs, const FileEncryptionKey &rhs) {
   return !(lhs == rhs);
+}
+
+inline StringBuilder &operator<<(StringBuilder &string_builder, const FileEncryptionKey &key) {
+  if (key.is_secret()) {
+    return string_builder << "SecretKey{" << key.size() << "}";
+  }
+  if (key.is_secret()) {
+    return string_builder << "SecureKey{" << key.size() << "}";
+  }
+  return string_builder << "NoKey{}";
 }
 
 struct EmptyRemoteFileLocation {
@@ -311,8 +388,7 @@ struct PhotoRemoteFileLocation {
 
 inline StringBuilder &operator<<(StringBuilder &string_builder, const PhotoRemoteFileLocation &location) {
   return string_builder << "[id = " << location.id_ << ", access_hash = " << location.access_hash_
-                        << ", volume_id = " << location.volume_id_ << ", secret = " << location.secret_
-                        << ", local_id = " << location.local_id_ << "]";
+                        << ", volume_id = " << location.volume_id_ << ", local_id = " << location.local_id_ << "]";
 }
 
 struct WebRemoteFileLocation {
@@ -400,7 +476,7 @@ class FullRemoteFileLocation {
   static constexpr int32 WEB_LOCATION_FLAG = 1 << 24;
   bool web_location_flag_{false};
   DcId dc_id_;
-  enum class LocationType { Web, Photo, Common, None };
+  enum class LocationType : int32 { Web, Photo, Common, None };
   Variant<WebRemoteFileLocation, PhotoRemoteFileLocation, CommonRemoteFileLocation> variant_;
 
   LocationType location_type() const {
@@ -422,6 +498,8 @@ class FullRemoteFileLocation {
       case FileType::Animation:
       case FileType::Encrypted:
       case FileType::VideoNote:
+      case FileType::SecureRaw:
+      case FileType::Secure:
         return LocationType::Common;
       case FileType::None:
       case FileType::Size:
@@ -525,6 +603,7 @@ class FullRemoteFileLocation {
   }
 
   DcId get_dc_id() const {
+    CHECK(!is_web());
     return dc_id_;
   }
   int64 get_access_hash() const {
@@ -571,8 +650,20 @@ class FullRemoteFileLocation {
   bool is_common() const {
     return location_type() == LocationType::Common;
   }
-  bool is_encrypted() const {
+  bool is_encrypted_secret() const {
     return file_type_ == FileType::Encrypted;
+  }
+  bool is_encrypted_secure() const {
+    return file_type_ == FileType::Secure;
+  }
+  bool is_encrypted_any() const {
+    return is_encrypted_secret() || is_encrypted_secure();
+  }
+  bool is_secure() const {
+    return file_type_ == FileType::SecureRaw || file_type_ == FileType::Secure;
+  }
+  bool is_document() const {
+    return is_common() && !is_secure() && !is_encrypted_secret();
   }
 
   tl_object_ptr<telegram_api::inputWebFileLocation> as_input_web_file_location() const {
@@ -584,8 +675,10 @@ class FullRemoteFileLocation {
       case LocationType::Photo:
         return make_tl_object<telegram_api::inputFileLocation>(photo().volume_id_, photo().local_id_, photo().secret_);
       case LocationType::Common:
-        if (is_encrypted()) {
+        if (is_encrypted_secret()) {
           return make_tl_object<telegram_api::inputEncryptedFileLocation>(common().id_, common().access_hash_);
+        } else if (is_secure()) {
+          return make_tl_object<telegram_api::inputSecureFileLocation>(common().id_, common().access_hash_);
         } else {
           return make_tl_object<telegram_api::inputDocumentFileLocation>(common().id_, common().access_hash_, 0);
         }
@@ -599,7 +692,7 @@ class FullRemoteFileLocation {
 
   tl_object_ptr<telegram_api::InputDocument> as_input_document() const {
     CHECK(is_common());
-    LOG_IF(ERROR, is_encrypted()) << "Can't call as_input_document on an encrypted file";
+    LOG_IF(ERROR, !is_document()) << "Can't call as_input_document on an encrypted file";
     return make_tl_object<telegram_api::inputDocument>(common().id_, common().access_hash_);
   }
 
@@ -609,8 +702,12 @@ class FullRemoteFileLocation {
   }
 
   tl_object_ptr<telegram_api::InputEncryptedFile> as_input_encrypted_file() const {
-    CHECK(is_encrypted()) << "Can't call as_input_encrypted_file on a non-encrypted file";
+    CHECK(is_encrypted_secret()) << "Can't call as_input_encrypted_file on a non-encrypted file";
     return make_tl_object<telegram_api::inputEncryptedFile>(common().id_, common().access_hash_);
+  }
+  tl_object_ptr<telegram_api::InputSecureFile> as_input_secure_file() const {
+    CHECK(is_secure()) << "Can't call as_input_secure_file on a non-secure file";
+    return make_tl_object<telegram_api::inputSecureFile>(common().id_, common().access_hash_);
   }
 
   // TODO: this constructor is just for immediate unserialize
@@ -626,10 +723,10 @@ class FullRemoteFileLocation {
       : file_type_(file_type), dc_id_(dc_id), variant_(CommonRemoteFileLocation{id, access_hash}) {
     CHECK(is_common());
   }
-  FullRemoteFileLocation(FileType file_type, string url, int64 access_hash, DcId dc_id)
+  FullRemoteFileLocation(FileType file_type, string url, int64 access_hash)
       : file_type_(file_type)
       , web_location_flag_{true}
-      , dc_id_(dc_id)
+      , dc_id_()
       , variant_(WebRemoteFileLocation{std::move(url), access_hash}) {
     CHECK(is_web());
     CHECK(!web().url_.empty());
@@ -681,9 +778,12 @@ class FullRemoteFileLocation {
 
 inline StringBuilder &operator<<(StringBuilder &string_builder,
                                  const FullRemoteFileLocation &full_remote_file_location) {
-  string_builder << "[" << file_type_name[static_cast<int32>(full_remote_file_location.file_type_)] << ", "
-                 << full_remote_file_location.get_dc_id() << ", location = ";
+  string_builder << "[" << file_type_name[static_cast<int32>(full_remote_file_location.file_type_)];
+  if (!full_remote_file_location.is_web()) {
+    string_builder << ", " << full_remote_file_location.get_dc_id();
+  }
 
+  string_builder << ", location = ";
   if (full_remote_file_location.is_web()) {
     string_builder << full_remote_file_location.web();
   } else if (full_remote_file_location.is_photo()) {
@@ -879,7 +979,7 @@ inline bool operator!=(const FullLocalFileLocation &lhs, const FullLocalFileLoca
 }
 
 inline StringBuilder &operator<<(StringBuilder &sb, const FullLocalFileLocation &location) {
-  return sb << tag("path", location.path_);
+  return sb << "[" << file_type_name[static_cast<int32>(location.file_type_)] << "] at \"" << location.path_ << '"';
 }
 
 class LocalFileLocation {
@@ -1109,9 +1209,11 @@ class FileData {
     using ::td::store;
     bool has_owner_dialog_id = owner_dialog_id_.is_valid();
     bool has_expected_size = size_ == 0 && expected_size_ != 0;
+    bool encryption_key_is_secure = encryption_key_.is_secure();
     BEGIN_STORE_FLAGS();
     STORE_FLAG(has_owner_dialog_id);
     STORE_FLAG(has_expected_size);
+    STORE_FLAG(encryption_key_is_secure);
     END_STORE_FLAGS();
 
     if (has_owner_dialog_id) {
@@ -1136,10 +1238,12 @@ class FileData {
     using ::td::parse;
     bool has_owner_dialog_id;
     bool has_expected_size;
+    bool encryption_key_is_secure;
     BEGIN_PARSE_FLAGS();
     PARSE_FLAG(has_owner_dialog_id);
     PARSE_FLAG(has_expected_size);
-    END_PARSE_FLAGS();
+    PARSE_FLAG(encryption_key_is_secure);
+    END_PARSE_FLAGS_GENERIC();
 
     if (has_owner_dialog_id) {
       parse(owner_dialog_id_, parser);
@@ -1161,12 +1265,15 @@ class FileData {
     }
     parse(remote_name_, parser);
     parse(url_, parser);
-    parse(encryption_key_, parser);
+    encryption_key_.parse(encryption_key_is_secure ? FileEncryptionKey::Type::Secure : FileEncryptionKey::Type::Secret,
+                          parser);
   }
 };
+
 inline StringBuilder &operator<<(StringBuilder &sb, const FileData &file_data) {
   sb << "[" << tag("remote_name", file_data.remote_name_) << " " << file_data.owner_dialog_id_ << " "
-     << tag("size", file_data.size_) << tag("expected_size", file_data.expected_size_);
+     << tag("size", file_data.size_) << tag("expected_size", file_data.expected_size_) << " "
+     << file_data.encryption_key_;
   if (!file_data.url_.empty()) {
     sb << tag("url", file_data.url_);
   }
@@ -1190,9 +1297,10 @@ string as_key(const T &object) {
 
   BufferSlice key_buffer{calc_length.get_length()};
   auto key = key_buffer.as_slice();
-  TlStorerUnsafe storer(key.begin());
+  TlStorerUnsafe storer(key.ubegin());
   storer.store_int(T::KEY_MAGIC);
   object.as_key().store(storer);
+  CHECK(storer.get_buf() == key.uend());
   return key.str();
 }
 

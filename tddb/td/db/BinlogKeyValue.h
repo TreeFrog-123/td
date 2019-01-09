@@ -29,6 +29,7 @@
 #include <utility>
 
 namespace td {
+
 template <class BinlogT>
 class BinlogKeyValue : public KeyValueSyncInterface {
  public:
@@ -57,11 +58,10 @@ class BinlogKeyValue : public KeyValueSyncInterface {
       store(storer);
       return storer.get_length();
     }
-    size_t store(uint8 *ptr_x) const override {
-      auto ptr = reinterpret_cast<char *>(ptr_x);
+    size_t store(uint8 *ptr) const override {
       TlStorerUnsafe storer(ptr);
       store(storer);
-      return storer.get_buf() - ptr;
+      return static_cast<size_t>(storer.get_buf() - ptr);
     }
   };
 
@@ -81,8 +81,7 @@ class BinlogKeyValue : public KeyValueSyncInterface {
                              [&](const BinlogEvent &binlog_event) {
                                Event event;
                                event.parse(TlParser(binlog_event.data_));
-                               map_.emplace(std::make_pair(event.key.str(),
-                                                           std::make_pair(event.value.str(), binlog_event.id_)));
+                               map_.emplace(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
                              },
                              std::move(db_key), DbKey::empty(), scheduler_id));
     return Status::OK();
@@ -103,7 +102,7 @@ class BinlogKeyValue : public KeyValueSyncInterface {
   void external_init_handle(const BinlogEvent &binlog_event) {
     Event event;
     event.parse(TlParser(binlog_event.data_));
-    map_.emplace(std::make_pair(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_)));
+    map_.emplace(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
   }
 
   void external_init_finish(std::shared_ptr<BinlogT> binlog) {
@@ -159,7 +158,7 @@ class BinlogKeyValue : public KeyValueSyncInterface {
   }
 
   void add_event(uint64 seq_no, BufferSlice &&event) {
-    binlog_->add_raw_event(seq_no, std::move(event));
+    binlog_->add_raw_event(BinlogDebugInfo{__FILE__, __LINE__}, seq_no, std::move(event));
   }
 
   bool isset(const string &key) override {
@@ -236,17 +235,21 @@ class BinlogKeyValue : public KeyValueSyncInterface {
   RwMutex rw_mutex_;
   int32 magic_ = magic;
 };
+
 template <>
 inline void BinlogKeyValue<Binlog>::add_event(uint64 seq_no, BufferSlice &&event) {
-  binlog_->add_raw_event(std::move(event));
+  binlog_->add_raw_event(std::move(event), BinlogDebugInfo{__FILE__, __LINE__});
 }
+
 template <>
 inline void BinlogKeyValue<Binlog>::force_sync(Promise<> &&promise) {
   binlog_->sync();
   promise.set_value(Unit());
 }
+
 template <>
 inline void BinlogKeyValue<Binlog>::lazy_sync(Promise<> &&promise) {
   force_sync(std::move(promise));
 }
+
 }  // namespace td

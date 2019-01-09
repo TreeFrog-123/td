@@ -8,6 +8,8 @@
 
 #include "td/telegram/net/NetQuery.h"
 
+#include "td/actor/actor.h"
+
 #include "td/utils/common.h"
 #include "td/utils/Random.h"
 
@@ -30,7 +32,7 @@ class SequenceDispatcher : public NetQueryCallback {
   void close_silent();
 
  private:
-  enum class State { Start, Wait, Finish, Dummy };
+  enum class State : int32 { Start, Wait, Finish, Dummy };
   struct Data {
     State state_;
     NetQueryRef net_query_ref_;

@@ -31,11 +31,13 @@ struct Query {
 }  // namespace mtproto
 
 template <class T>
-Result<typename T::ReturnType> fetch_result(Slice message) {
+Result<typename T::ReturnType> fetch_result(Slice message, bool check_end = true) {
   TlParser parser(message);
   auto result = T::fetch_result(parser);
 
-  parser.fetch_end();
+  if (check_end) {
+    parser.fetch_end();
+  }
   const char *error = parser.get_error();
   if (error != nullptr) {
     LOG(ERROR) << "Can't parse: " << format::as_hex_dump<4>(message);
@@ -46,11 +48,13 @@ Result<typename T::ReturnType> fetch_result(Slice message) {
 }
 
 template <class T>
-Result<typename T::ReturnType> fetch_result(const BufferSlice &message) {
+Result<typename T::ReturnType> fetch_result(const BufferSlice &message, bool check_end = true) {
   TlBufferParser parser(&message);
   auto result = T::fetch_result(parser);
 
-  parser.fetch_end();
+  if (check_end) {
+    parser.fetch_end();
+  }
   const char *error = parser.get_error();
   if (error != nullptr) {
     LOG(ERROR) << "Can't parse: " << format::as_hex_dump<4>(message.as_slice());
@@ -82,11 +86,10 @@ class TLObjectStorer : public Storer {
     return size_;
   }
   size_t store(uint8 *ptr) const override {
-    char *p = reinterpret_cast<char *>(ptr);
-    TlStorerUnsafe storer(p);
+    TlStorerUnsafe storer(ptr);
     storer.store_binary(object_.get_id());
     object_.store(storer);
-    return storer.get_buf() - p;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 };
 

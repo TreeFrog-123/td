@@ -6,8 +6,6 @@
 //
 #include "td/telegram/AnimationsManager.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/telegram/AuthManager.h"
 #include "td/telegram/DialogId.h"
 #include "td/telegram/DocumentsManager.h"
@@ -20,6 +18,10 @@
 #include "td/telegram/secret_api.h"
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
+
+#include "td/actor/PromiseFuture.h"
+
+#include "td/db/SqliteKeyValueAsync.h"
 
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -308,7 +310,7 @@ SecretInputMedia AnimationsManager::get_secret_input_media(FileId animation_file
   CHECK(animation != nullptr);
   auto file_view = td_->file_manager_->get_file_view(animation_file_id);
   auto &encryption_key = file_view.encryption_key();
-  if (encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {
@@ -392,7 +394,7 @@ void AnimationsManager::reload_saved_animations(bool force) {
       (next_saved_animations_load_time_ < Time::now() || force)) {
     LOG_IF(INFO, force) << "Reload saved animations";
     next_saved_animations_load_time_ = -1;
-    td_->create_handler<GetSavedGifsQuery>()->send(get_saved_animations_hash());
+    td_->create_handler<GetSavedGifsQuery>()->send(get_saved_animations_hash("reload_saved_animations"));
   }
 }
 
@@ -495,8 +497,9 @@ void AnimationsManager::on_get_saved_animations(
 
   on_load_saved_animations_finished(std::move(saved_animation_ids));
 
-  LOG_IF(ERROR, get_saved_animations_hash() != saved_animations->hash_)
-      << "Saved animations hash mismatch: " << saved_animations->hash_ << " vs " << get_saved_animations_hash();
+  LOG_IF(ERROR, get_saved_animations_hash("on_get_saved_animations") != saved_animations->hash_)
+      << "Saved animations hash mismatch: " << saved_animations->hash_ << " vs "
+      << get_saved_animations_hash("on_get_saved_animations 2");
 }
 
 void AnimationsManager::on_get_saved_animations_failed(Status error) {
@@ -509,7 +512,7 @@ void AnimationsManager::on_get_saved_animations_failed(Status error) {
   }
 }
 
-int32 AnimationsManager::get_saved_animations_hash() const {
+int32 AnimationsManager::get_saved_animations_hash(const char *source) const {
   vector<uint32> numbers;
   numbers.reserve(saved_animation_ids_.size() * 2);
   for (auto animation_id : saved_animation_ids_) {
@@ -517,8 +520,7 @@ int32 AnimationsManager::get_saved_animations_hash() const {
     CHECK(animation != nullptr);
     auto file_view = td_->file_manager_->get_file_view(animation_id);
     CHECK(file_view.has_remote_location());
-    CHECK(!file_view.remote_location().is_encrypted());
-    CHECK(!file_view.remote_location().is_web());
+    CHECK(file_view.remote_location().is_document()) << source << " " << file_view.remote_location();
     auto id = static_cast<uint64>(file_view.remote_location().get_id());
     numbers.push_back(static_cast<uint32>(id >> 32));
     numbers.push_back(static_cast<uint32>(id & 0xFFFFFFFF));
@@ -598,12 +600,12 @@ bool AnimationsManager::add_saved_animation_impl(FileId animation_id, Promise<Un
     promise.set_error(Status::Error(7, "Can save only sent animations"));
     return false;
   }
-  if (file_view.remote_location().is_encrypted()) {
-    promise.set_error(Status::Error(7, "Can't save encrypted animations"));
-    return false;
-  }
   if (file_view.remote_location().is_web()) {
     promise.set_error(Status::Error(7, "Can't save web animations"));
+    return false;
+  }
+  if (!file_view.remote_location().is_document()) {
+    promise.set_error(Status::Error(7, "Can't save encrypted animations"));
     return false;
   }
 
@@ -654,7 +656,7 @@ void AnimationsManager::remove_saved_animation(const tl_object_ptr<td_api::Input
   // TODO invokeAfter
   auto file_view = td_->file_manager_->get_file_view(file_id);
   CHECK(file_view.has_remote_location());
-  CHECK(!file_view.remote_location().is_encrypted());
+  CHECK(file_view.remote_location().is_document()) << file_view.remote_location();
   CHECK(!file_view.remote_location().is_web());
   td_->create_handler<SaveGifQuery>(std::move(promise))->send(file_view.remote_location().as_input_document(), true);
 

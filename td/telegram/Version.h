@@ -23,6 +23,9 @@ enum class Version : int32 {
   FixPageBlockAudioEmptyFile,
   AddMessageInvoiceProviderData,
   AddCaptionEntities,
+  AddVenueType,
+  AddTermsOfService,
+  AddContactVcard,
   Next
 };
 

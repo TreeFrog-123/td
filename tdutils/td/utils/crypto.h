@@ -6,8 +6,10 @@
 //
 #pragma once
 
+#include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/Slice.h"
+#include "td/utils/Status.h"
 
 namespace td {
 
@@ -44,9 +46,27 @@ class AesCtrState {
   std::unique_ptr<Impl> ctx_;
 };
 
+class AesCbcState {
+ public:
+  AesCbcState(const UInt256 &key, const UInt128 &iv);
+
+  void encrypt(Slice from, MutableSlice to);
+  void decrypt(Slice from, MutableSlice to);
+
+ private:
+  UInt256 key_;
+  UInt128 iv_;
+};
+
 void sha1(Slice data, unsigned char output[20]);
 
 void sha256(Slice data, MutableSlice output);
+
+void sha512(Slice data, MutableSlice output);
+
+string sha256(Slice data) TD_WARN_UNUSED_RESULT;
+
+string sha512(Slice data) TD_WARN_UNUSED_RESULT;
 
 struct Sha256StateImpl;
 
@@ -65,7 +85,13 @@ void sha256_final(Sha256State *state, MutableSlice output);
 void md5(Slice input, MutableSlice output);
 
 void pbkdf2_sha256(Slice password, Slice salt, int iteration_count, MutableSlice dest);
+void pbkdf2_sha512(Slice password, Slice salt, int iteration_count, MutableSlice dest);
+
 void hmac_sha256(Slice key, Slice message, MutableSlice dest);
+
+// Interface may be improved
+Result<BufferSlice> rsa_encrypt_pkcs1_oaep(Slice public_key, Slice data);
+Result<BufferSlice> rsa_decrypt_pkcs1_oaep(Slice private_key, Slice data);
 
 void init_openssl_threads();
 #endif

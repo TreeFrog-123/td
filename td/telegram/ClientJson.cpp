@@ -22,14 +22,13 @@ Result<Client::Request> ClientJson::to_request(Slice request) {
   auto request_str = request.str();
   TRY_RESULT(json_value, json_decode(request_str));
   if (json_value.type() != JsonValue::Type::Object) {
-    return Status::Error("Expected an object");
+    return Status::Error("Expected an Object");
   }
-  TRY_RESULT(extra_field, get_json_object_field(json_value.get_object(), "@extra", JsonValue::Type::Null, true));
   std::uint64_t extra_id = extra_id_.fetch_add(1, std::memory_order_relaxed);
-  auto extra_str = json_encode<string>(extra_field);
-  if (!extra_str.empty()) {
+  if (has_json_object_field(json_value.get_object(), "@extra")) {
     std::lock_guard<std::mutex> guard(mutex_);
-    extra_[extra_id] = std::move(extra_str);
+    extra_[extra_id] = json_encode<string>(
+        get_json_object_field(json_value.get_object(), "@extra", JsonValue::Type::Null).move_as_ok());
   }
 
   td_api::object_ptr<td_api::Function> func;
@@ -67,13 +66,13 @@ CSlice ClientJson::store_string(std::string str) {
 }
 
 void ClientJson::send(Slice request) {
-  auto status = [&] {
-    TRY_RESULT(client_request, to_request(request));
-    client_.send(std::move(client_request));
-    return Status::OK();
-  }();
+  auto r_request = to_request(request);
+  if (r_request.is_error()) {
+    LOG(ERROR) << "Failed to parse " << tag("request", format::escaped(request)) << " " << r_request.error();
+    return;
+  }
 
-  LOG_IF(ERROR, status.is_error()) << "Failed to parse " << tag("request", format::escaped(request)) << " " << status;
+  client_.send(r_request.move_as_ok());
 }
 
 CSlice ClientJson::receive(double timeout) {

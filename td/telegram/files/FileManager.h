@@ -16,6 +16,10 @@
 #include "td/telegram/files/FileLoadManager.h"
 #include "td/telegram/files/FileLocation.h"
 #include "td/telegram/files/FileStats.h"
+#include "td/telegram/Location.h"
+
+#include "td/actor/actor.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
@@ -224,8 +228,20 @@ class FileView {
     }
     return FileType::Temp;
   }
-  bool is_encrypted() const {
+  bool is_encrypted_secret() const {
     return get_type() == FileType::Encrypted;
+  }
+  bool is_encrypted_secure() const {
+    return get_type() == FileType::Secure;
+  }
+  bool is_secure() const {
+    return get_type() == FileType::Secure || get_type() == FileType::SecureRaw;
+  }
+  bool is_encrypted_any() const {
+    return is_encrypted_secret() || is_encrypted_secure();
+  }
+  bool is_encrypted() const {
+    return is_encrypted_secret() || is_secure();
   }
   const FileEncryptionKey &encryption_key() const {
     return node_->encryption_key_;
@@ -235,7 +251,6 @@ class FileView {
   ConstFileNodePtr node_{};
 };
 
-class Td;
 class FileManager : public FileLoadManager::Callback {
  public:
   class DownloadCallback {
@@ -266,6 +281,7 @@ class FileManager : public FileLoadManager::Callback {
     // Also upload may be resumed after some other merges.
     virtual void on_upload_ok(FileId file_id, tl_object_ptr<telegram_api::InputFile> input_file) = 0;
     virtual void on_upload_encrypted_ok(FileId file_id, tl_object_ptr<telegram_api::InputEncryptedFile> input_file) = 0;
+    virtual void on_upload_secure_ok(FileId file_id, tl_object_ptr<telegram_api::InputSecureFile> input_file) = 0;
     virtual void on_upload_error(FileId file_id, Status error) = 0;
   };
 
@@ -326,12 +342,16 @@ class FileManager : public FileLoadManager::Callback {
   FileView get_file_view(FileId file_id) const;
   FileView get_sync_file_view(FileId file_id);
   tl_object_ptr<td_api::file> get_file_object(FileId file_id, bool with_main_file_id = true);
+  vector<tl_object_ptr<td_api::file>> get_files_object(const vector<FileId> &file_ids, bool with_main_file_id = true);
 
   Result<FileId> get_input_thumbnail_file_id(const tl_object_ptr<td_api::InputFile> &thumb_input_file,
                                              DialogId owner_dialog_id, bool is_encrypted) TD_WARN_UNUSED_RESULT;
   Result<FileId> get_input_file_id(FileType type, const tl_object_ptr<td_api::InputFile> &file,
                                    DialogId owner_dialog_id, bool allow_zero, bool is_encrypted,
-                                   bool get_by_hash = false) TD_WARN_UNUSED_RESULT;
+                                   bool get_by_hash = false, bool is_secure = false) TD_WARN_UNUSED_RESULT;
+
+  Result<FileId> get_map_thumbnail_file_id(Location location, int32 zoom, int32 width, int32 height, int32 scale,
+                                           DialogId owner_dialog_id) TD_WARN_UNUSED_RESULT;
 
   vector<tl_object_ptr<telegram_api::InputDocument>> get_input_documents(const vector<FileId> &file_ids);
 
@@ -342,8 +362,8 @@ class FileManager : public FileLoadManager::Callback {
   FileId parse_file(T &parser);
 
  private:
-  Result<FileId> check_input_file_id(FileType type, Result<FileId> result, bool is_encrypted,
-                                     bool allow_zero) TD_WARN_UNUSED_RESULT;
+  Result<FileId> check_input_file_id(FileType type, Result<FileId> result, bool is_encrypted, bool allow_zero,
+                                     bool is_secure) TD_WARN_UNUSED_RESULT;
 
   FileId register_url(string url, FileType file_type, FileLocationSource file_location_source,
                       DialogId owner_dialog_id);
@@ -354,7 +374,7 @@ class FileManager : public FileLoadManager::Callback {
   class Query {
    public:
     FileId file_id_;
-    enum Type { UploadByHash, Upload, Download, SetContent, Generate } type_;
+    enum Type : int32 { UploadByHash, Upload, Download, SetContent, Generate } type_;
   };
   struct FileIdInfo {
     FileNodeId node_id_{0};
@@ -400,6 +420,8 @@ class FileManager : public FileLoadManager::Callback {
   ActorOwn<FileGenerateManager> file_generate_manager_;
 
   Container<Query> queries_container_;
+
+  bool is_closed_ = false;
 
   std::set<std::string> bad_paths_;
 
@@ -451,6 +473,7 @@ class FileManager : public FileLoadManager::Callback {
 
   void on_start_download(QueryId query_id) override;
   void on_partial_download(QueryId query_id, const PartialLocalFileLocation &partial_local, int64 ready_size) override;
+  void on_hash(QueryId query_id, string hash) override;
   void on_partial_upload(QueryId query_id, const PartialRemoteFileLocation &partial_remote, int64 ready_size) override;
   void on_download_ok(QueryId query_id, const FullLocalFileLocation &local, int64 size) override;
   void on_upload_ok(QueryId query_id, FileType file_type, const PartialRemoteFileLocation &partial_remote,

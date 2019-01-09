@@ -7,6 +7,7 @@
 #pragma once
 
 #include "td/telegram/DhConfig.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQueryCreator.h"
 #include "td/telegram/TdDb.h"
 #include "td/telegram/TdParameters.h"
@@ -15,10 +16,6 @@
 #include "td/actor/Condition.h"
 #include "td/actor/PromiseFuture.h"
 #include "td/actor/SchedulerLocalStorage.h"
-
-#include "td/db/binlog/ConcurrentBinlog.h"
-#include "td/db/BinlogKeyValue.h"
-#include "td/db/Pmc.h"
 
 #include "td/net/NetStats.h"
 
@@ -31,6 +28,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 namespace td {
 class AnimationsManager;
@@ -40,9 +38,11 @@ class ConfigManager;
 class ConnectionCreator;
 class ContactsManager;
 class FileManager;
+class LanguagePackManager;
 class MtprotoHeader;
 class MessagesManager;
 class NetQueryDispatcher;
+class PasswordManager;
 class SecretChatsManager;
 class StateManager;
 class StickersManager;
@@ -52,9 +52,10 @@ class TempAuthKeyWatchdog;
 class TopDialogManager;
 class UpdatesManager;
 class WebPagesManager;
-};  // namespace td
+}  // namespace td
 
 namespace td {
+
 class Global : public ActorContext {
  public:
   Global();
@@ -91,6 +92,10 @@ class Global : public ActorContext {
 
   NetQueryDispatcher &net_query_dispatcher() {
     return *net_query_dispatcher_;
+  }
+
+  bool have_net_query_dispatcher() const {
+    return net_query_dispatcher_ != nullptr;
   }
 
   void set_shared_config(std::unique_ptr<ConfigShared> shared_config);
@@ -152,11 +157,23 @@ class Global : public ActorContext {
   void set_file_manager(ActorId<FileManager> file_manager) {
     file_manager_ = std::move(file_manager);
   }
+  ActorId<LanguagePackManager> language_pack_manager() const {
+    return language_pack_manager_;
+  }
+  void set_language_pack_manager(ActorId<LanguagePackManager> language_pack_manager) {
+    language_pack_manager_ = language_pack_manager;
+  }
   ActorId<MessagesManager> messages_manager() const {
     return messages_manager_;
   }
   void set_messages_manager(ActorId<MessagesManager> messages_manager) {
     messages_manager_ = messages_manager;
+  }
+  ActorId<PasswordManager> password_manager() const {
+    return password_manager_;
+  }
+  void set_password_manager(ActorId<PasswordManager> password_manager) {
+    password_manager_ = password_manager;
   }
   ActorId<SecretChatsManager> secret_chats_manager() const {
     return secret_chats_manager_;
@@ -214,8 +231,11 @@ class Global : public ActorContext {
   ActorId<TempAuthKeyWatchdog> temp_auth_key_watchdog() const;
   void set_temp_auth_key_watchdog(ActorOwn<TempAuthKeyWatchdog> actor);
 
-  const MtprotoHeader &mtproto_header() const;
+  MtprotoHeader &mtproto_header();
   void set_mtproto_header(std::unique_ptr<MtprotoHeader> mtproto_header);
+  bool have_mtproto_header() const {
+    return mtproto_header_ != nullptr;
+  }
 
   const TdParameters &parameters() const {
     return parameters_;
@@ -235,6 +255,8 @@ class Global : public ActorContext {
   int32 get_slow_net_scheduler_id() const {
     return slow_net_scheduler_id_;
   }
+
+  DcId get_webfile_dc_id() const;
 
 #if !TD_HAVE_ATOMIC_SHARED_PTR
   std::mutex dh_config_mutex_;
@@ -280,6 +302,10 @@ class Global : public ActorContext {
     net_stats_file_callbacks_ = std::move(callbacks);
   }
 
+  int64 get_location_access_hash(double latitude, double longitude);
+
+  void add_location_access_hash(double latitude, double longitude, int64 access_hash);
+
  private:
   std::shared_ptr<DhConfig> dh_config_;
 
@@ -291,6 +317,8 @@ class Global : public ActorContext {
   ActorId<ContactsManager> contacts_manager_;
   ActorId<FileManager> file_manager_;
   ActorId<MessagesManager> messages_manager_;
+  ActorId<LanguagePackManager> language_pack_manager_;
+  ActorId<PasswordManager> password_manager_;
   ActorId<SecretChatsManager> secret_chats_manager_;
   ActorId<CallManager> call_manager_;
   ActorId<StickersManager> stickers_manager_;
@@ -323,6 +351,10 @@ class Global : public ActorContext {
 
   int32 my_id_ = 0;  // hack
 
+  static int64 get_location_key(double latitude, double longitude);
+
+  std::unordered_map<int64, int64> location_access_hashes_;
+
   void do_close(Promise<> on_finish, bool destroy_flag);
 };
 
@@ -330,4 +362,5 @@ inline Global *G() {
   CHECK(Scheduler::context());
   return static_cast<Global *>(Scheduler::context());
 }
+
 }  // namespace td

@@ -11,6 +11,8 @@
 #include "td/db/SqliteKeyValueSafe.h"
 #include "td/db/TsSeqKeyValue.h"
 
+#include "td/actor/actor.h"
+
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
 #include "td/utils/port/FileFd.h"
@@ -34,6 +36,22 @@ static typename ContainerT::value_type &rand_elem(ContainerT &cont) {
   return cont[Random::fast(0, static_cast<int>(cont.size()) - 1)];
 }
 
+TEST(DB, binlog_encryption_bug) {
+  CSlice binlog_name = "test_binlog";
+  Binlog::destroy(binlog_name).ignore();
+
+  auto cucumber = DbKey::password("cucumber");
+  auto empty = DbKey::empty();
+  {
+    Binlog binlog;
+    binlog.init(binlog_name.str(), [&](const BinlogEvent &x) {}, cucumber).ensure();
+  }
+  {
+    Binlog binlog;
+    binlog.init(binlog_name.str(), [&](const BinlogEvent &x) {}, cucumber).ensure();
+  }
+}
+
 TEST(DB, binlog_encryption) {
   CSlice binlog_name = "test_binlog";
   Binlog::destroy(binlog_name).ignore();
@@ -45,14 +63,18 @@ TEST(DB, binlog_encryption) {
   {
     Binlog binlog;
     binlog.init(binlog_name.str(), [](const BinlogEvent &x) {}).ensure();
-    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("AAAA")));
-    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("BBBB")));
-    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer(long_data)));
+    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("AAAA")),
+                         BinlogDebugInfo{__FILE__, __LINE__});
+    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("BBBB")),
+                         BinlogDebugInfo{__FILE__, __LINE__});
+    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer(long_data)),
+                         BinlogDebugInfo{__FILE__, __LINE__});
     LOG(INFO) << "SET PASSWORD";
     binlog.change_key(cucumber);
     binlog.change_key(hello);
     LOG(INFO) << "OK";
-    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("CCCC")));
+    binlog.add_raw_event(BinlogEvent::create_raw(binlog.next_id(), 1, 0, create_storer("CCCC")),
+                         BinlogDebugInfo{__FILE__, __LINE__});
     binlog.close().ensure();
   }
 
@@ -114,7 +136,7 @@ TEST(DB, sqlite_encryption) {
     auto db = SqliteDb::open_with_key(path, empty).move_as_ok();
     db.set_user_version(123);
     auto kv = SqliteKeyValue();
-    kv.init_with_connection(db.clone(), "kv");
+    kv.init_with_connection(db.clone(), "kv").ensure();
     kv.set("a", "b");
   }
   SqliteDb::open_with_key(path, cucumber).ensure_error();  // key was set...
@@ -125,7 +147,7 @@ TEST(DB, sqlite_encryption) {
   {
     auto db = SqliteDb::open_with_key(path, cucumber).move_as_ok();
     auto kv = SqliteKeyValue();
-    kv.init_with_connection(db.clone(), "kv");
+    kv.init_with_connection(db.clone(), "kv").ensure();
     CHECK(kv.get("a") == "b");
     CHECK(db.user_version().ok() == 123);
   }
@@ -137,7 +159,7 @@ TEST(DB, sqlite_encryption) {
   {
     auto db = SqliteDb::open_with_key(path, tomato).move_as_ok();
     auto kv = SqliteKeyValue();
-    kv.init_with_connection(db.clone(), "kv");
+    kv.init_with_connection(db.clone(), "kv").ensure();
     CHECK(kv.get("a") == "b");
     CHECK(db.user_version().ok() == 123);
   }
@@ -148,7 +170,7 @@ TEST(DB, sqlite_encryption) {
   {
     auto db = SqliteDb::open_with_key(path, empty).move_as_ok();
     auto kv = SqliteKeyValue();
-    kv.init_with_connection(db.clone(), "kv");
+    kv.init_with_connection(db.clone(), "kv").ensure();
     CHECK(kv.get("a") == "b");
     CHECK(db.user_version().ok() == 123);
   }
@@ -234,7 +256,7 @@ class BaselineKV {
 };
 
 TEST(DB, key_value) {
-  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(INFO));
+  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
   std::vector<std::string> keys;
   std::vector<std::string> values;
 
@@ -409,7 +431,7 @@ TEST(DB, persistent_key_value) {
   using KeyValue = BinlogKeyValue<ConcurrentBinlog>;
   // using KeyValue = PersistentKeyValue;
   // using KeyValue = SqliteKV;
-  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(WARNING));
+  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
   std::vector<std::string> keys;
   std::vector<std::string> values;
   CSlice name = "test_pmc";

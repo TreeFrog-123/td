@@ -5,7 +5,9 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
+
 #include "td/telegram/net/AuthDataShared.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/actor/actor.h"
@@ -21,15 +23,13 @@
 #include <mutex>
 
 namespace td {
-class NetQueryDelayer;
-class DataCenter;
+
 class DcAuthManager;
-class SessionMultiProxy;
+class NetQueryDelayer;
 class PublicRsaKeyShared;
 class PublicRsaKeyWatchdog;
-}  // namespace td
+class SessionMultiProxy;
 
-namespace td {
 // Not just dispatcher.
 class NetQueryDispatcher {
  public:
@@ -47,8 +47,11 @@ class NetQueryDispatcher {
 
   void update_session_count();
   void update_use_pfs();
+  void update_mtproto_header();
+
   void update_valid_dc(DcId dc_id);
-  DcId main_dc_id() {
+
+  DcId main_dc_id() const {
     return DcId::internal(main_dc_id_.load());
   }
 
@@ -83,6 +86,9 @@ class NetQueryDispatcher {
   static int32 get_session_count();
   static bool get_use_pfs();
 
+  static void complete_net_query(NetQueryPtr net_query);
+
   void try_fix_migrate(NetQueryPtr &net_query);
 };
+
 }  // namespace td

@@ -506,8 +506,8 @@ Status SessionConnection::on_main_packet(const PacketInfo &info, Slice packet) {
     callback_->on_connected();
   }
 
-  VLOG(raw_mtproto) << "Got packet: [session_id:" << format::as_hex(info.session_id) << "] "
-                    << format::as_hex_dump<4>(packet);
+  VLOG(raw_mtproto) << "Got packet of size " << packet.size() << " from session " << format::as_hex(info.session_id)
+                    << ":" << format::as_hex_dump<4>(packet);
   if (info.no_crypto_flag) {
     return Status::Error("Unencrypted packet");
   }
@@ -603,6 +603,9 @@ bool SessionConnection::must_flush_packet() {
   }
   // get_future_salt
   if (!has_salt) {
+    if (last_get_future_salt_at_ == 0) {
+      return true;
+    }
     auto get_future_salts_at = last_get_future_salt_at_ + 60;
     if (get_future_salts_at < Time::now_cached()) {
       return true;
@@ -712,6 +715,8 @@ Result<uint64> SessionConnection::send_query(BufferSlice buffer, bool gzip_flag,
     send_before(Time::now_cached() + QUERY_DELAY);
   }
   to_send_.push_back(Query{message_id, seq_no, std::move(buffer), gzip_flag, invoke_after_id, use_quick_ack});
+  VLOG(mtproto) << "Invoke query " << message_id << " of size " << to_send_.back().packet.size() << " with seq_no "
+                << seq_no << " after " << invoke_after_id << (use_quick_ack ? " with quick ack" : "");
 
   return message_id;
 }
@@ -741,8 +746,10 @@ std::pair<uint64, BufferSlice> SessionConnection::encrypted_bind(int64 perm_key,
 
   mtproto_api::bind_auth_key_inner object(nonce, temp_key, perm_key, auth_data_->session_id_, expire_at);
   auto object_storer = create_storer(object);
-  auto object_packet = BufferWriter{object_storer.size(), 0, 0};
-  object_storer.store(object_packet.as_slice().ubegin());
+  auto size = object_storer.size();
+  auto object_packet = BufferWriter{size, 0, 0};
+  auto real_size = object_storer.store(object_packet.as_slice().ubegin());
+  CHECK(size == real_size);
 
   Query query{auth_data_->next_message_id(Time::now_cached()), 0, object_packet.as_buffer_slice(), false, 0, false};
   PacketStorer<QueryImpl> query_storer(query, Slice());
@@ -796,8 +803,8 @@ void SessionConnection::flush_packet() {
   if (mode_ == Mode::HttpLongPoll) {
     max_delay = HTTP_MAX_DELAY;
     max_after = HTTP_MAX_AFTER;
-    max_wait = min(http_max_wait(),
-                   static_cast<int>(1000 * max(0.1, ping_disconnect_delay() + last_pong_at_ - Time::now_cached() - 1)));
+    auto time_to_disconnect = ping_disconnect_delay() + last_pong_at_ - Time::now_cached();
+    max_wait = min(http_max_wait(), static_cast<int>(1000 * max(0.1, time_to_disconnect - rtt())));
   } else if (mode_ == Mode::Http) {
     max_delay = HTTP_MAX_DELAY;
     max_after = HTTP_MAX_AFTER;
@@ -807,7 +814,8 @@ void SessionConnection::flush_packet() {
   // future salts
   int future_salt_n = 0;
   if (mode_ != Mode::HttpLongPoll) {
-    if (auth_data_->need_future_salts(Time::now_cached()) && last_get_future_salt_at_ + 60 < Time::now_cached()) {
+    if (auth_data_->need_future_salts(Time::now_cached()) &&
+        (last_get_future_salt_at_ == 0 || last_get_future_salt_at_ + 60 < Time::now_cached())) {
       last_get_future_salt_at_ = Time::now_cached();
       future_salt_n = 64;
     }
@@ -869,9 +877,9 @@ void SessionConnection::flush_packet() {
   {
     uint64 parent_message_id = 0;
     auto storer = PacketStorer<CryptoImpl>(
-        queries, auth_data_->header(), std::move(to_ack), ping_id, ping_disconnect_delay() + 2, max_delay, max_after,
-        max_wait, future_salt_n, to_get_state_info, to_resend_answer, to_cancel_answer, auth_data_, &container_id,
-        &get_state_info_id, &resend_answer_id, &ping_message_id, &parent_message_id);
+        queries, auth_data_->get_header(), std::move(to_ack), ping_id, ping_disconnect_delay() + 2, max_delay,
+        max_after, max_wait, future_salt_n, to_get_state_info, to_resend_answer, to_cancel_answer, auth_data_,
+        &container_id, &get_state_info_id, &resend_answer_id, &ping_message_id, &parent_message_id);
 
     auto quick_ack_token = use_quick_ack ? parent_message_id : 0;
     send_crypto(storer, quick_ack_token);

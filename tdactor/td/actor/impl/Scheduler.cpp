@@ -134,7 +134,9 @@ EventGuard::~EventGuard() {
   swap_context(info);
   CHECK(info->is_lite() || save_context_ == info->get_context());
 #ifdef TD_DEBUG
-  CHECK(info->is_lite() || save_log_tag2_ == info->get_name().c_str());
+  CHECK(info->is_lite() || save_log_tag2_ == info->get_name().c_str())
+      << info->is_lite() << " " << info->empty() << " " << info->is_migrating() << " " << save_log_tag2_ << " "
+      << info->get_name() << " " << scheduler_->close_flag_;
 #endif
   if (event_context_.flags & Scheduler::EventContext::Stop) {
     scheduler_->do_stop_actor(info);
@@ -288,7 +290,8 @@ void Scheduler::register_migrated_actor(ActorInfo *actor_info) {
   VLOG(actor) << "Register migrated actor: " << tag("name", *actor_info) << tag("ptr", actor_info)
               << tag("actor_count", actor_count_);
   actor_count_++;
-  CHECK(actor_info->is_migrating());
+  CHECK(actor_info->is_migrating()) << *actor_info << " " << actor_count_ << " " << sched_id_ << " "
+                                    << actor_info->migrate_dest() << " " << actor_info->is_running() << close_flag_;
   CHECK(sched_id_ == actor_info->migrate_dest());
   // CHECK(!actor_info->is_running());
   actor_info->finish_migrate();
@@ -409,7 +412,7 @@ void Scheduler::set_actor_timeout_in(ActorInfo *actor_info, double timeout) {
 
 void Scheduler::set_actor_timeout_at(ActorInfo *actor_info, double timeout_at) {
   HeapNode *heap_node = actor_info->get_heap_node();
-  VLOG(actor) << "set actor " << *actor_info << " " << tag("timeout", timeout_at) << timeout_at - Time::now_cached();
+  VLOG(actor) << "Set actor " << *actor_info << " timeout in " << timeout_at - Time::now_cached();
   if (heap_node->in_heap()) {
     timeout_queue_.fix(timeout_at, heap_node);
   } else {
@@ -466,7 +469,7 @@ double Scheduler::run_timeout() {
     HeapNode *node = timeout_queue_.pop();
     ActorInfo *actor_info = ActorInfo::from_heap_node(node);
     inc_wait_generation();
-    send(actor_info->actor_id(), Event::timeout(), Send::immediate);
+    send<ActorSendType::Immediate>(actor_info->actor_id(), Event::timeout());
   }
   if (timeout_queue_.empty()) {
     return 10000;

@@ -14,6 +14,7 @@
 #include "td/utils/Time.h"
 
 namespace td {
+
 void StateManager::inc_connect() {
   auto &cnt = get_link_token() == 1 ? connect_cnt_ : connect_proxy_cnt_;
   cnt++;
@@ -45,9 +46,14 @@ void StateManager::on_synchronized(bool is_synchronized) {
   }
 }
 
+void StateManager::on_network_updated() {
+  do_on_network(network_type_, true /*inc_generation*/);
+}
+
 void StateManager::on_network(NetType new_network_type) {
   do_on_network(new_network_type, true /*inc_generation*/);
 }
+
 void StateManager::do_on_network(NetType new_network_type, bool inc_generation) {
   bool new_network_flag = new_network_type != NetType::None;
   if (network_flag_ != new_network_flag) {
@@ -58,12 +64,12 @@ void StateManager::do_on_network(NetType new_network_type, bool inc_generation) 
   if (inc_generation) {
     network_generation_++;
   }
-  notify_flags(NetworkFlag);
+  notify_flag(Flag::Network);
 }
 
 void StateManager::on_online(bool is_online) {
   online_flag_ = is_online;
-  notify_flags(OnlineFlag);
+  notify_flag(Flag::Online);
 }
 
 void StateManager::on_proxy(bool use_proxy) {
@@ -105,18 +111,21 @@ StateManager::State StateManager::get_real_state() const {
   return State::Ready;
 }
 
-void StateManager::notify_flags(int32 flags) {
+void StateManager::notify_flag(Flag flag) {
   for (auto it = callbacks_.begin(); it != callbacks_.end();) {
-    bool ok = true;
-    if (flags & OnlineFlag) {
-      ok &= (*it)->on_online(online_flag_);
-    }
-    if (flags & StateFlag) {
-      ok &= (*it)->on_state(flush_state_);
-    }
-    if (flags & NetworkFlag) {
-      ok &= (*it)->on_network(network_type_, network_generation_);
-    }
+    bool ok = [&] {
+      switch (flag) {
+        case Flag::Online:
+          return (*it)->on_online(online_flag_);
+        case Flag::State:
+          return (*it)->on_state(flush_state_);
+        case Flag::Network:
+          return (*it)->on_network(network_type_, network_generation_);
+        default:
+          UNREACHABLE();
+          return true;
+      }
+    }();
     if (ok) {
       ++it;
     } else {
@@ -165,7 +174,7 @@ void StateManager::loop() {
     if (now >= pending_timestamp_ + delay) {
       has_timestamp_ = false;
       flush_state_ = pending_state_;
-      notify_flags(StateFlag);
+      notify_flag(Flag::State);
     } else {
       set_timeout_at(pending_timestamp_ + delay);
     }
@@ -173,4 +182,5 @@ void StateManager::loop() {
     has_timestamp_ = false;
   }
 }
+
 }  // namespace td

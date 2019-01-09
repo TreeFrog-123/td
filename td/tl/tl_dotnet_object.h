@@ -82,6 +82,16 @@ auto CLRCALL FromUnmanaged(std::vector<FromT> &vec) {
   return res;
 }
 
+inline auto CLRCALL BytesFromUnmanaged(const std::vector<std::string> &vec) {
+  using ToT = decltype(BytesFromUnmanaged(vec[0]));
+  Array<ToT>^ res = REF_NEW Vector<ToT>(static_cast<ArrayIndexType>(vec.size()));
+  ArrayIndexType i = 0;
+  for (auto &from : vec) {
+    ArraySet(res, i++, BytesFromUnmanaged(from));
+  }
+  return res;
+}
+
 template <class T>
 auto CLRCALL FromUnmanaged(td::td_api::object_ptr<T> &from) -> decltype(FromUnmanaged(*from.get())) {
   if (!from) {
@@ -90,9 +100,11 @@ auto CLRCALL FromUnmanaged(td::td_api::object_ptr<T> &from) -> decltype(FromUnma
   return FromUnmanaged(*from.get());
 }
 
+#if TD_CLI
 template <class ResT>
 ref class CallFromUnmanagedRes {
 public:
+  [System::ThreadStaticAttribute]
   static property ResT res;
 };
 
@@ -103,17 +115,29 @@ struct CallFromUnmanaged {
     CallFromUnmanagedRes<ResT>::res = FromUnmanaged(val);
   }
 };
+#endif
+
+template <class ResT, class T>
+inline ResT DoFromUnmanaged(T &from) {
+#if TD_WINRT
+  ResT res;
+  downcast_call(from, [&](auto &from_downcasted) {
+    res = FromUnmanaged(from_downcasted);
+  });
+  return res;
+#elif TD_CLI
+  CallFromUnmanaged<ResT> res;
+  downcast_call(from, res);
+  return CallFromUnmanagedRes<ResT>::res;
+#endif
+}
 
 inline BaseObject^ FromUnmanaged(td::td_api::Function &from) {
-  CallFromUnmanaged<BaseObject^> res;
-  downcast_call(from, res);
-  return CallFromUnmanagedRes<BaseObject^>::res;
+  return DoFromUnmanaged<BaseObject^>(from);
 }
 
 inline BaseObject^ FromUnmanaged(td::td_api::Object &from) {
-  CallFromUnmanaged<BaseObject^> res;
-  downcast_call(from, res);
-  return CallFromUnmanagedRes<BaseObject^>::res;
+  return DoFromUnmanaged<BaseObject^>(from);
 }
 
 // to unmanaged

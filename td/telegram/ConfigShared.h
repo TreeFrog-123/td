@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 namespace td {
+
 class ConfigShared {
  public:
   class Callback {
@@ -24,7 +25,7 @@ class ConfigShared {
     Callback(const Callback &) = delete;
     Callback &operator=(const Callback &) = delete;
     virtual ~Callback() = default;
-    virtual void on_option_updated(const string &name) = 0;
+    virtual void on_option_updated(const string &name, const string &value) = 0;
   };
 
   ConfigShared(BinlogPmcPtr config_pmc, unique_ptr<Callback> callback);
@@ -39,8 +40,9 @@ class ConfigShared {
   std::unordered_map<string, string> get_options(Slice prefix) const;
   std::unordered_map<string, string> get_options() const;
 
-  bool get_option_boolean(Slice name) const;
+  bool get_option_boolean(Slice name, bool default_value = false) const;
   int32 get_option_integer(Slice name, int32 default_value = 0) const;
+  string get_option_string(Slice name, string default_value = "") const;
 
   tl_object_ptr<td_api::OptionValue> get_option_value(Slice value) const;
 
@@ -51,6 +53,7 @@ class ConfigShared {
   bool set_option(Slice name, Slice value);
   static tl_object_ptr<td_api::OptionValue> get_option_value_object(Slice value);
 
-  void on_option_updated(Slice name);
+  void on_option_updated(Slice name) const;
 };
+
 }  // namespace td

@@ -75,4 +75,48 @@ double to_double(Slice str) {
   return result;
 }
 
+Result<string> hex_decode(Slice hex) {
+  if (hex.size() % 2 != 0) {
+    return Status::Error("Wrong hex string length");
+  }
+  string result(hex.size() / 2, '\0');
+  for (size_t i = 0; i < result.size(); i++) {
+    int high = hex_to_int(hex[i + i]);
+    int low = hex_to_int(hex[i + i + 1]);
+    if (high == 16 || low == 16) {
+      return Status::Error("Wrong hex string");
+    }
+    result[i] = static_cast<char>(high * 16 + low);  // TODO implementation-defined
+  }
+  return std::move(result);
+}
+
+static bool is_url_char(char c) {
+  return is_alnum(c) || c == '-' || c == '.' || c == '_' || c == '~';
+}
+
+string url_encode(Slice str) {
+  size_t length = 3 * str.size();
+  for (auto c : str) {
+    length -= 2 * is_url_char(c);
+  }
+  if (length == str.size()) {
+    return str.str();
+  }
+  string result;
+  result.reserve(length);
+  for (auto c : str) {
+    if (is_url_char(c)) {
+      result += c;
+    } else {
+      auto ch = static_cast<unsigned char>(c);
+      result += '%';
+      result += "0123456789ABCDEF"[ch / 16];
+      result += "0123456789ABCDEF"[ch % 16];
+    }
+  }
+  CHECK(result.size() == length);
+  return result;
+}
+
 }  // namespace td

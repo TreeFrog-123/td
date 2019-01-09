@@ -5,6 +5,7 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
+
 #include "td/telegram/net/AuthDataShared.h"
 #include "td/telegram/net/NetQuery.h"
 
@@ -13,7 +14,9 @@
 #include <memory>
 
 namespace td {
+
 class Session;
+
 class SessionProxy : public Actor {
  public:
   friend class SessionCallback;
@@ -23,6 +26,7 @@ class SessionProxy : public Actor {
 
   void send(NetQueryPtr query);
   void update_main_flag(bool is_main);
+  void update_mtproto_header();
 
  private:
   std::shared_ptr<AuthDataShared> auth_data_;
@@ -32,6 +36,7 @@ class SessionProxy : public Actor {
   bool is_media_;
   bool use_pfs_;
   mtproto::AuthKey tmp_auth_key_;
+  std::vector<mtproto::ServerSalt> server_salts_;
   bool need_wait_for_key_;
   bool is_cdn_;
   ActorOwn<Session> session_;
@@ -45,8 +50,10 @@ class SessionProxy : public Actor {
 
   void update_auth_state();
   void on_tmp_auth_key_updated(mtproto::AuthKey auth_key);
+  void on_server_salt_updated(std::vector<mtproto::ServerSalt> server_salts);
 
   void start_up() override;
   void tear_down() override;
 };
+
 }  // namespace td

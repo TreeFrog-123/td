@@ -98,6 +98,7 @@ Status Transport::read_crypto_impl(int X, MutableSlice message, const AuthKey &a
   auto *header = &as<HeaderT>(message.begin());
   *header_ptr = header;
   auto to_decrypt = MutableSlice(header->encrypt_begin(), message.uend());
+  to_decrypt = to_decrypt.truncate(to_decrypt.size() & ~15);
   if (to_decrypt.size() % 16 != 0) {
     return Status::Error(PSLICE() << "Invalid mtproto message: size of encrypted part is not multiple of 16 [size="
                                   << to_decrypt.size() << "]");
@@ -193,16 +194,18 @@ size_t Transport::write_no_crypto(const Storer &storer, PacketInfo *info, Mutabl
   }
   auto &header = as<NoCryptoHeader>(dest.begin());
   header.auth_key_id = 0;
-  storer.store(header.data);
+  auto real_size = storer.store(header.data);
+  CHECK(real_size == storer.size());
   return size;
 }
 
 template <class HeaderT>
 void Transport::write_crypto_impl(int X, const Storer &storer, const AuthKey &auth_key, PacketInfo *info,
                                   HeaderT *header, size_t data_size) {
-  storer.store(header->data);
-  VLOG(raw_mtproto) << "SEND" << format::as_hex_dump<4>(Slice(header->data, data_size));
-  // LOG(ERROR) << "SEND" << format::as_hex_dump<4>(Slice(header->data, data_size)) << info->version;
+  auto real_data_size = storer.store(header->data);
+  CHECK(real_data_size == data_size);
+  VLOG(raw_mtproto) << "Send packet of size " << data_size << " to session " << format::as_hex(info->session_id) << ":"
+                    << format::as_hex_dump<4>(Slice(header->data, data_size));
 
   size_t size = 0;
   if (info->version == 1) {
@@ -284,28 +287,36 @@ Result<uint64> Transport::read_auth_key_id(Slice message) {
   return as<uint64>(message.begin());
 }
 
-Status Transport::read(MutableSlice message, const AuthKey &auth_key, PacketInfo *info, MutableSlice *data,
-                       int32 *error_code) {
-  if (message.size() < 8) {
-    if (message.size() == 4) {
-      *error_code = as<int32>(message.begin());
-      return Status::OK();
+Result<Transport::ReadResult> Transport::read(MutableSlice message, const AuthKey &auth_key, PacketInfo *info) {
+  if (message.size() < 12) {
+    if (message.size() < 4) {
+      return Status::Error(PSLICE() << "Invalid mtproto message: smaller than 4 bytes [size=" << message.size() << "]");
     }
-    return Status::Error(PSLICE() << "Invalid mtproto message: smaller than 8 bytes [size=" << message.size() << "]");
+
+    auto code = as<int32>(message.begin());
+    if (code == 0) {
+      return ReadResult::make_nop();
+    } else if (code == -1 && message.size() >= 8) {
+      return ReadResult::make_quick_ack(as<uint32>(message.begin() + 4));
+    } else {
+      return ReadResult::make_error(code);
+    }
   }
+
   info->auth_key_id = as<int64>(message.begin());
   info->no_crypto_flag = info->auth_key_id == 0;
+  MutableSlice data;
   if (info->type == PacketInfo::EndToEnd) {
-    return read_e2e_crypto(message, auth_key, info, data);
-  }
-  if (info->no_crypto_flag) {
-    return read_no_crypto(message, info, data);
+    TRY_STATUS(read_e2e_crypto(message, auth_key, info, &data));
+  } else if (info->no_crypto_flag) {
+    TRY_STATUS(read_no_crypto(message, info, &data));
   } else {
     if (auth_key.empty()) {
       return Status::Error("Failed to decrypt mtproto message: auth key is empty");
     }
-    return read_crypto(message, auth_key, info, data);
+    TRY_STATUS(read_crypto(message, auth_key, info, &data));
   }
+  return ReadResult::make_packet(data);
 }
 
 size_t Transport::write(const Storer &storer, const AuthKey &auth_key, PacketInfo *info, MutableSlice dest) {

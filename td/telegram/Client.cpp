@@ -8,14 +8,16 @@
 
 #include "td/telegram/Td.h"
 
+#include "td/actor/actor.h"
+
 #include "td/utils/crypto.h"
 #include "td/utils/logging.h"
 #include "td/utils/MpscPollableQueue.h"
-#include "td/utils/Observer.h"
 #include "td/utils/port/Fd.h"
 #include "td/utils/port/Poll.h"
 #include "td/utils/port/thread.h"
 
+#include <atomic>
 #include <deque>
 
 namespace td {
@@ -57,6 +59,10 @@ class Client::Impl final {
     return {0, nullptr};
   }
 
+  Impl(const Impl &) = delete;
+  Impl &operator=(const Impl &) = delete;
+  Impl(Impl &&) = delete;
+  Impl &operator=(Impl &&) = delete;
   ~Impl() {
     {
       auto guard = scheduler_->get_current_guard();
@@ -71,7 +77,6 @@ class Client::Impl final {
  private:
   std::deque<Response> responses_;
   std::vector<Request> requests_;
-  int output_queue_ready_cnt_{0};
   std::unique_ptr<ConcurrentScheduler> scheduler_;
   ActorOwn<Td> td_;
   bool closed_ = false;
@@ -81,7 +86,7 @@ class Client::Impl final {
     scheduler_->init(0);
     class Callback : public TdCallback {
      public:
-      Callback(Impl *client) : client_(client) {
+      explicit Callback(Impl *client) : client_(client) {
       }
       void on_result(std::uint64_t id, td_api::object_ptr<td_api::Object> result) override {
         client_->responses_.push_back({id, std::move(result)});
@@ -191,7 +196,7 @@ class TdProxy : public Actor {
 };
 
 /*** Client::Impl ***/
-class Client::Impl final : ObserverBase {
+class Client::Impl final {
  public:
   Impl() {
     init();
@@ -207,20 +212,18 @@ class Client::Impl final : ObserverBase {
   }
 
   Response receive(double timeout) {
-    if (output_queue_ready_cnt_ == 0) {
-      output_queue_ready_cnt_ = output_queue_->reader_wait_nonblock();
-    }
-    if (output_queue_ready_cnt_ > 0) {
-      output_queue_ready_cnt_--;
-      return output_queue_->reader_get_unsafe();
-    }
-    if (timeout != 0) {
-      poll_.run(static_cast<int>(timeout * 1000));
-      return receive(0);
-    }
-    return {0, nullptr};
+    auto is_locked = receive_lock_.exchange(true);
+    CHECK(!is_locked);
+    auto response = receive_unlocked(timeout);
+    is_locked = receive_lock_.exchange(false);
+    CHECK(is_locked);
+    return response;
   }
 
+  Impl(const Impl &) = delete;
+  Impl &operator=(const Impl &) = delete;
+  Impl(Impl &&) = delete;
+  Impl &operator=(Impl &&) = delete;
   ~Impl() {
     input_queue_->writer_put({0, nullptr});
     scheduler_thread_.join();
@@ -233,7 +236,7 @@ class Client::Impl final : ObserverBase {
   std::shared_ptr<ConcurrentScheduler> scheduler_;
   int output_queue_ready_cnt_{0};
   thread scheduler_thread_;
-  bool notify_flag_{false};
+  std::atomic<bool> receive_lock_{false};
 
   void init() {
     input_queue_ = std::make_shared<InputQueue>();
@@ -253,12 +256,22 @@ class Client::Impl final : ObserverBase {
 
     poll_.init();
     auto &event_fd = output_queue_->reader_get_event_fd();
-    event_fd.get_fd().set_observer(this);
     poll_.subscribe(event_fd.get_fd(), Fd::Read);
   }
 
-  void notify() override {
-    notify_flag_ = true;
+  Response receive_unlocked(double timeout) {
+    if (output_queue_ready_cnt_ == 0) {
+      output_queue_ready_cnt_ = output_queue_->reader_wait_nonblock();
+    }
+    if (output_queue_ready_cnt_ > 0) {
+      output_queue_ready_cnt_--;
+      return output_queue_->reader_get_unsafe();
+    }
+    if (timeout != 0) {
+      poll_.run(static_cast<int>(timeout * 1000));
+      return receive_unlocked(0);
+    }
+    return {0, nullptr};
   }
 };
 #endif

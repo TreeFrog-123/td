@@ -18,7 +18,7 @@ namespace TdApp
     {
         public System.Collections.ObjectModel.ObservableCollection<string> Items { get; set; }
 
-        private static MyClientResultHandler _handler;
+        private MyClientResultHandler _handler;
 
         public MainPage()
         {
@@ -27,11 +27,13 @@ namespace TdApp
             Items = new System.Collections.ObjectModel.ObservableCollection<string>();
             _handler = new MyClientResultHandler(this);
 
+            Td.Log.SetFilePath(Path.Combine(Windows.Storage.ApplicationData.Current.LocalFolder.Path, "log"));
+            Td.Log.SetVerbosityLevel(0);
+
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    Td.Log.SetFilePath(Path.Combine(Windows.Storage.ApplicationData.Current.LocalFolder.Path, "log"));
                     _client = Td.Client.Create(_handler);
                     var parameters = new TdApi.TdlibParameters();
                     parameters.DatabaseDirectory = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
@@ -62,7 +64,7 @@ namespace TdApp
             });
         }
 
-        private static Td.Client _client;
+        private Td.Client _client;
 
         private void AcceptCommand(String command)
         {

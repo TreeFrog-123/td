@@ -10,6 +10,7 @@
 #include "td/telegram/AudiosManager.h"
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/Global.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/Photo.h"
 #include "td/telegram/StickersManager.h"
 #include "td/telegram/Td.h"
@@ -128,6 +129,7 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
   FileType file_type = FileType::Document;
   Slice default_extension;
   bool supports_streaming = false;
+  bool has_webp_thumbnail = false;
   if (type_attributes == 1 || default_document_type != DocumentType::General) {  // not a general document
     if (animated != nullptr || default_document_type == DocumentType::Animation) {
       document_type = DocumentType::Animation;
@@ -155,6 +157,7 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
       default_extension = "webp";
       owner_dialog_id = DialogId();
       file_name.clear();
+      has_webp_thumbnail = td_->stickers_manager_->has_webp_thumbnail(sticker);
     } else if (video != nullptr || default_document_type == DocumentType::Video ||
                default_document_type == DocumentType::VideoNote) {
       bool is_video_note = default_document_type == DocumentType::VideoNote;
@@ -202,7 +205,7 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
 
     if (document_type != DocumentType::VoiceNote) {
       thumbnail = get_photo_size(td_->file_manager_.get(), FileType::Thumbnail, 0, 0, owner_dialog_id,
-                                 std::move(document->thumb_));
+                                 std::move(document->thumb_), has_webp_thumbnail);
     }
   } else if (remote_document.secret_file != nullptr) {
     CHECK(remote_document.secret_document != nullptr);
@@ -242,7 +245,6 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
         }
         auto http_url = r_http_url.move_as_ok();
 
-        dc_id = web_document->dc_id_;
         access_hash = web_document->access_hash_;
         url = http_url.get_url();
         file_name = get_url_query_file_name(http_url.query_);
@@ -271,7 +273,7 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
   }
 
   LOG(DEBUG) << "Receive document with id = " << id << " of type " << static_cast<int32>(document_type);
-  if (!is_web_no_proxy && !DcId::is_valid(dc_id)) {
+  if (!is_web && !DcId::is_valid(dc_id)) {
     LOG(ERROR) << "Wrong dc_id = " << dc_id;
     return {DocumentType::Unknown, FileId()};
   }
@@ -295,9 +297,8 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
       td_->file_manager_->set_encryption_key(file_id, std::move(encryption_key));
     }
   } else if (!is_web_no_proxy) {
-    file_id =
-        td_->file_manager_->register_remote(FullRemoteFileLocation(file_type, url, access_hash, DcId::internal(dc_id)),
-                                            FileLocationSource::FromServer, owner_dialog_id, 0, size, file_name);
+    file_id = td_->file_manager_->register_remote(FullRemoteFileLocation(file_type, url, access_hash),
+                                                  FileLocationSource::FromServer, owner_dialog_id, 0, size, file_name);
   } else {
     auto r_file_id = td_->file_manager_->from_persistent_id(url, file_type);
     if (r_file_id.is_error()) {
@@ -321,18 +322,24 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
       td_->animations_manager_->create_animation(file_id, std::move(thumbnail), std::move(file_name),
                                                  std::move(mime_type), video_duration, dimensions, !is_web);
       break;
-    case DocumentType::Audio:
-      CHECK(audio != nullptr);
+    case DocumentType::Audio: {
+      int32 duration = 0;
+      string title;
+      string performer;
+      if (audio != nullptr) {
+        duration = audio->duration_;
+        title = std::move(audio->title_);
+        performer = std::move(audio->performer_);
+      }
       td_->audios_manager_->create_audio(file_id, std::move(thumbnail), std::move(file_name), std::move(mime_type),
-                                         audio->duration_, std::move(audio->title_), std::move(audio->performer_),
-                                         !is_web);
+                                         duration, std::move(title), std::move(performer), !is_web);
       break;
+    }
     case DocumentType::General:
       td_->documents_manager_->create_document(file_id, std::move(thumbnail), std::move(file_name),
                                                std::move(mime_type), !is_web);
       break;
     case DocumentType::Sticker:
-      CHECK(sticker != nullptr);
       td_->stickers_manager_->create_sticker(file_id, std::move(thumbnail), dimensions, true, std::move(sticker),
                                              load_data_multipromise_ptr);
       break;
@@ -344,11 +351,17 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
     case DocumentType::VideoNote:
       td_->video_notes_manager_->create_video_note(file_id, std::move(thumbnail), video_duration, dimensions, !is_web);
       break;
-    case DocumentType::VoiceNote:
-      CHECK(audio != nullptr);
-      td_->voice_notes_manager_->create_voice_note(file_id, std::move(mime_type), audio->duration_,
-                                                   audio->waveform_.as_slice().str(), !is_web);
+    case DocumentType::VoiceNote: {
+      int32 duration = 0;
+      string waveform;
+      if (audio != nullptr) {
+        duration = audio->duration_;
+        waveform = audio->waveform_.as_slice().str();
+      }
+      td_->voice_notes_manager_->create_voice_note(file_id, std::move(mime_type), duration, std::move(waveform),
+                                                   !is_web);
       break;
+    }
     case DocumentType::Unknown:
     default:
       UNREACHABLE();
@@ -412,7 +425,7 @@ const DocumentsManager::Document *DocumentsManager::get_document(FileId file_id)
 bool DocumentsManager::has_input_media(FileId file_id, FileId thumbnail_file_id, bool is_secret) const {
   auto file_view = td_->file_manager_->get_file_view(file_id);
   if (is_secret) {
-    if (file_view.encryption_key().empty() || !file_view.has_remote_location()) {
+    if (!file_view.is_encrypted_secret() || file_view.encryption_key().empty() || !file_view.has_remote_location()) {
       return false;
     }
 
@@ -432,7 +445,7 @@ SecretInputMedia DocumentsManager::get_secret_input_media(FileId document_file_i
   CHECK(document != nullptr);
   auto file_view = td_->file_manager_->get_file_view(document_file_id);
   auto &encryption_key = file_view.encryption_key();
-  if (encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {

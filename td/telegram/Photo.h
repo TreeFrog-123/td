@@ -38,7 +38,7 @@ struct ProfilePhoto : public DialogPhoto {
 };
 
 struct PhotoSize {
-  int32 type = 0;  // TODO remove
+  int32 type = 0;
   Dimensions dimensions;
   int32 size = 0;
   FileId file_id;
@@ -81,7 +81,7 @@ StringBuilder &operator<<(StringBuilder &string_builder, const DialogPhoto &dial
 PhotoSize get_thumbnail_photo_size(FileManager *file_manager, BufferSlice bytes, DialogId owner_dialog_id, int32 width,
                                    int32 height);
 PhotoSize get_photo_size(FileManager *file_manager, FileType file_type, int64 id, int64 access_hash,
-                         DialogId owner_dialog_id, tl_object_ptr<telegram_api::PhotoSize> &&size_ptr);
+                         DialogId owner_dialog_id, tl_object_ptr<telegram_api::PhotoSize> &&size_ptr, bool is_webp);
 PhotoSize get_web_document_photo_size(FileManager *file_manager, FileType file_type, DialogId owner_dialog_id,
                                       tl_object_ptr<telegram_api::WebDocument> web_document_ptr);
 tl_object_ptr<td_api::photoSize> get_photo_size_object(FileManager *file_manager, const PhotoSize *photo_size);
@@ -89,6 +89,8 @@ void sort_photo_sizes(vector<td_api::object_ptr<td_api::photoSize>> &sizes);
 
 bool operator==(const PhotoSize &lhs, const PhotoSize &rhs);
 bool operator!=(const PhotoSize &lhs, const PhotoSize &rhs);
+
+bool operator<(const PhotoSize &lhs, const PhotoSize &rhs);
 
 StringBuilder &operator<<(StringBuilder &string_builder, const PhotoSize &photo_size);
 

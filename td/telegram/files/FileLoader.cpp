@@ -18,6 +18,7 @@
 #include "td/utils/ScopeGuard.h"
 
 #include <tuple>
+#include <utility>
 
 namespace td {
 void FileLoader::set_resource_manager(ActorShared<ResourceManager> resource_manager) {
@@ -122,7 +123,7 @@ Status FileLoader::do_loop() {
   }
   for (auto &query : check_info.queries) {
     G()->net_query_dispatcher().dispatch_with_callback(
-        std::move(query), actor_shared(this, UniqueId::next(UniqueId::Type::Default, CommonQueryKey)));
+        std::move(query), actor_shared(this, UniqueId::next(UniqueId::Type::Default, COMMON_QUERY_KEY)));
   }
   if (check_info.need_check) {
     parts_manager_.set_need_check();
@@ -176,7 +177,7 @@ Status FileLoader::do_loop() {
     } else {
       send_closure(delay_dispatcher_, &DelayDispatcher::send_with_callback_and_delay, std::move(query),
                    std::move(callback), next_delay_);
-      next_delay_ = std::max(next_delay_ * 0.8, 0.003);
+      next_delay_ = max(next_delay_ * 0.8, 0.003);
     }
   }
   return Status::OK();
@@ -208,7 +209,7 @@ void FileLoader::on_result(NetQueryPtr query) {
   if (id == blocking_id_) {
     blocking_id_ = 0;
   }
-  if (UniqueId::extract_key(id) == CommonQueryKey) {
+  if (UniqueId::extract_key(id) == COMMON_QUERY_KEY) {
     on_common_query(std::move(query));
     return loop();
   }
@@ -273,9 +274,9 @@ Status FileLoader::try_on_part_query(Part part, NetQueryPtr query) {
   TRY_RESULT(size, process_part(part, std::move(query)));
   VLOG(files) << "Ok part " << tag("id", part.id) << tag("size", part.size);
   resource_state_.stop_use(static_cast<int64>(part.size));
-  auto old_ready_prefix_count = parts_manager_.get_ready_prefix_count();
+  auto old_ready_prefix_count = parts_manager_.get_unchecked_ready_prefix_count();
   TRY_STATUS(parts_manager_.on_part_ok(part.id, part.size, size));
-  auto new_ready_prefix_count = parts_manager_.get_ready_prefix_count();
+  auto new_ready_prefix_count = parts_manager_.get_unchecked_ready_prefix_count();
   debug_total_parts_++;
   if (old_ready_prefix_count == new_ready_prefix_count) {
     debug_bad_parts_.push_back(part.id);

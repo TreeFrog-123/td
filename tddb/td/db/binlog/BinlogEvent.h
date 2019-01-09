@@ -8,17 +8,15 @@
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
-#include "td/utils/crypto.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
-#include "td/utils/misc.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/Storer.h"
 #include "td/utils/StringBuilder.h"
-#include "td/utils/tl_storers.h"
 
 namespace td {
+
 struct EmptyStorerImpl {
   EmptyStorerImpl() {
   }
@@ -40,7 +38,20 @@ static constexpr size_t MIN_EVENT_SIZE = EVENT_HEADER_SIZE + EVENT_TAIL_SIZE;
 
 extern int32 VERBOSITY_NAME(binlog);
 
-// TODO: smaller BinlogEvent
+struct BinlogDebugInfo {
+  BinlogDebugInfo() = default;
+  BinlogDebugInfo(const char *file, int line) : file(file), line(line) {
+  }
+  const char *file{""};
+  int line{0};
+};
+inline StringBuilder &operator<<(StringBuilder &sb, const BinlogDebugInfo &info) {
+  if (info.line == 0) {
+    return sb;
+  }
+  return sb << "[" << info.file << ":" << info.line << "]";
+}
+
 struct BinlogEvent {
   int64 offset_;
 
@@ -54,6 +65,8 @@ struct BinlogEvent {
 
   BufferSlice raw_event_;
 
+  BinlogDebugInfo debug_info_;
+
   enum ServiceTypes { Header = -1, Empty = -2, AesCtrEncryption = -3, NoEncryption = -4 };
   enum Flags { Rewrite = 1, Partial = 2 };
 
@@ -65,6 +78,7 @@ struct BinlogEvent {
   }
   BinlogEvent clone() const {
     BinlogEvent result;
+    result.debug_info_ = BinlogDebugInfo{__FILE__, __LINE__};
     result.init(raw_event_.clone()).ensure();
     return result;
   }
@@ -74,36 +88,30 @@ struct BinlogEvent {
   }
 
   BinlogEvent() = default;
-  explicit BinlogEvent(BufferSlice &&raw_event) {
+  //explicit BinlogEvent(BufferSlice &&raw_event) {
+  //init(std::move(raw_event), false).ensure();
+  //}
+  BinlogEvent(BufferSlice &&raw_event, BinlogDebugInfo info) {
+    debug_info_ = info;
     init(std::move(raw_event), false).ensure();
   }
+
   Status init(BufferSlice &&raw_event, bool check_crc = true) TD_WARN_UNUSED_RESULT;
 
   static BufferSlice create_raw(uint64 id, int32 type, int32 flags, const Storer &storer);
+
+  std::string public_to_string() const {
+    return PSTRING() << "LogEvent[" << tag("id", format::as_hex(id_)) << tag("type", type_) << tag("flags", flags_)
+                     << tag("data", data_.size()) << "]" << debug_info_;
+  }
+
+  Status validate() const;
 };
 
 inline StringBuilder &operator<<(StringBuilder &sb, const BinlogEvent &event) {
   return sb << "LogEvent[" << tag("id", format::as_hex(event.id_)) << tag("type", event.type_)
-            << tag("flags", event.flags_) << tag("data", format::as_hex_dump<4>(event.data_)) << "]";
+            << tag("flags", event.flags_) << tag("data", format::as_hex_dump<4>(event.data_)) << "]"
+            << event.debug_info_;
 }
 
-// Implementation
-inline BufferSlice BinlogEvent::create_raw(uint64 id, int32 type, int32 flags, const Storer &storer) {
-  auto raw_event = BufferSlice{storer.size() + MIN_EVENT_SIZE};
-
-  TlStorerUnsafe tl_storer(raw_event.as_slice().begin());
-  tl_storer.store_int(narrow_cast<int32>(raw_event.size()));
-  tl_storer.store_long(id);
-  tl_storer.store_int(type);
-  tl_storer.store_int(flags);
-  tl_storer.store_long(0);
-
-  CHECK(tl_storer.get_buf() == raw_event.as_slice().begin() + EVENT_HEADER_SIZE);
-  tl_storer.store_storer(storer);
-
-  CHECK(tl_storer.get_buf() == raw_event.as_slice().end() - EVENT_TAIL_SIZE);
-  tl_storer.store_int(::td::crc32(raw_event.as_slice().truncate(raw_event.size() - EVENT_TAIL_SIZE)));
-
-  return raw_event;
-}
 }  // namespace td

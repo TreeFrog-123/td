@@ -9,7 +9,6 @@
 #include "td/telegram/ContactsManager.h"
 #include "td/telegram/misc.h"
 
-#include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/unicode.h"
@@ -138,14 +137,14 @@ vector<tl_object_ptr<td_api::textEntity>> get_text_entities_object(const vector<
   return result;
 }
 
-static bool is_word_character(uint32 a) {
-  switch (get_unicode_simple_category(a)) {
+static bool is_word_character(uint32 code) {
+  switch (get_unicode_simple_category(code)) {
     case UnicodeSimpleCategory::Letter:
     case UnicodeSimpleCategory::DecimalNumber:
     case UnicodeSimpleCategory::Number:
       return true;
     default:
-      return a == '_';
+      return code == '_';
   }
 }
 
@@ -159,16 +158,16 @@ static bool is_word_boundary(uint32 a, uint32 b) {
 }
 */
 
-static bool is_alpha_digit(uint32 a) {
-  return ('0' <= a && a <= '9') || ('a' <= a && a <= 'z') || ('A' <= a && a <= 'Z');
+static bool is_alpha_digit(uint32 code) {
+  return ('0' <= code && code <= '9') || ('a' <= code && code <= 'z') || ('A' <= code && code <= 'Z');
 }
 
-static bool is_alpha_digit_or_underscore(uint32 a) {
-  return is_alpha_digit(a) || a == '_';
+static bool is_alpha_digit_or_underscore(uint32 code) {
+  return is_alpha_digit(code) || code == '_';
 }
 
-static bool is_alpha_digit_or_underscore_or_minus(uint32 a) {
-  return is_alpha_digit_or_underscore(a) || a == '-';
+static bool is_alpha_digit_or_underscore_or_minus(uint32 code) {
+  return is_alpha_digit_or_underscore(code) || code == '-';
 }
 
 // This functions just implements corresponding regexps
@@ -543,7 +542,7 @@ static vector<Slice> match_urls(Slice str) {
       while (bad_path_end_chars.find(path_end_ptr[-1]) < bad_path_end_chars.size()) {
         path_end_ptr--;
       }
-      if (url_end_ptr[0] == '/' || url_end_ptr[0] == '#' || path_end_ptr > url_end_ptr + 1) {
+      if (url_end_ptr[0] == '/' || path_end_ptr > url_end_ptr + 1) {
         url_end_ptr = path_end_ptr;
       }
     }
@@ -976,8 +975,8 @@ Slice fix_url(Slice str) {
 }
 
 const std::unordered_set<Slice, SliceHash> &get_valid_short_usernames() {
-  static const std::unordered_set<Slice, SliceHash> valid_usernames{
-      "ya", "gif", "wiki", "vid", "bing", "pic", "bold", "imdb", "coub", "like", "vote", "giff", "cap"};
+  static const std::unordered_set<Slice, SliceHash> valid_usernames{"ya",   "gif",  "wiki", "vid",  "bing", "pic",
+                                                                    "bold", "imdb", "coub", "like", "vote"};
   return valid_usernames;
 }
 
@@ -1012,6 +1011,8 @@ vector<std::pair<Slice, bool>> find_urls(Slice str) {
   for (auto url : match_urls(str)) {
     if (is_email_address(url)) {
       result.emplace_back(url, true);
+    } else if (begins_with(url, "mailto:") && is_email_address(url.substr(7))) {
+      result.emplace_back(url.substr(7), true);
     } else {
       url = fix_url(url);
       if (!url.empty()) {
@@ -1164,6 +1165,10 @@ static vector<MessageEntity> merge_entities(vector<MessageEntity> old_entities, 
   return result;
 }
 
+static bool is_plain_domain(Slice url) {
+  return url.find('/') >= url.size() && url.find('?') >= url.size() && url.find('#') >= url.size();
+}
+
 string get_first_url(Slice text, const vector<MessageEntity> &entities) {
   for (auto &entity : entities) {
     switch (entity.type) {
@@ -1173,8 +1178,13 @@ string get_first_url(Slice text, const vector<MessageEntity> &entities) {
         break;
       case MessageEntity::Type::BotCommand:
         break;
-      case MessageEntity::Type::Url:
-        return utf8_utf16_substr(text, entity.offset, entity.length).str();
+      case MessageEntity::Type::Url: {
+        Slice url = utf8_utf16_substr(text, entity.offset, entity.length);
+        if (begins_with(url, "tg:") || is_plain_domain(url)) {
+          continue;
+        }
+        return url.str();
+      }
       case MessageEntity::Type::EmailAddress:
         break;
       case MessageEntity::Type::Bold:
@@ -1188,6 +1198,9 @@ string get_first_url(Slice text, const vector<MessageEntity> &entities) {
       case MessageEntity::Type::PreCode:
         break;
       case MessageEntity::Type::TextUrl:
+        if (begins_with(entity.argument, "tg:")) {
+          continue;
+        }
         return entity.argument;
       case MessageEntity::Type::MentionName:
         break;
@@ -1204,7 +1217,7 @@ string get_first_url(Slice text, const vector<MessageEntity> &entities) {
 }
 
 static UserId get_link_user_id(Slice url) {
-  auto lower_cased_url = to_lower(url);
+  string lower_cased_url = to_lower(url);
   url = lower_cased_url;
 
   Slice link_scheme("tg:");
@@ -1235,7 +1248,11 @@ static UserId get_link_user_id(Slice url) {
     Slice value;
     std::tie(key, value) = split(parameter, '=');
     if (key == Slice("id")) {
-      return UserId(to_integer<int32>(value));
+      auto r_user_id = to_integer_safe<int32>(value);
+      if (r_user_id.is_error()) {
+        return UserId();
+      }
+      return UserId(r_user_id.ok());
     }
   }
   return UserId();
@@ -1329,10 +1346,10 @@ Result<vector<MessageEntity>> parse_markdown(string &text) {
           if (user_id.is_valid()) {
             entities.emplace_back(utf16_offset, utf16_entity_length, user_id);
           } else {
-            auto r_http_url = parse_url(url);
-            if (r_http_url.is_ok() && url.find('.') != string::npos) {
+            auto r_url = check_url(url);
+            if (r_url.is_ok()) {
               entities.emplace_back(MessageEntity::Type::TextUrl, utf16_offset, utf16_entity_length,
-                                    r_http_url.ok().get_url());
+                                    r_url.move_as_ok());
             }
           }
           break;
@@ -1585,10 +1602,9 @@ Result<vector<MessageEntity>> parse_html(string &text) {
         if (user_id.is_valid()) {
           entities.emplace_back(utf16_offset, utf16_entity_length, user_id);
         } else {
-          auto r_http_url = parse_url(url);
-          if (r_http_url.is_ok() && url.find('.') != string::npos) {
-            entities.emplace_back(MessageEntity::Type::TextUrl, utf16_offset, utf16_entity_length,
-                                  r_http_url.ok().get_url());
+          auto r_url = check_url(url);
+          if (r_url.is_ok()) {
+            entities.emplace_back(MessageEntity::Type::TextUrl, utf16_offset, utf16_entity_length, r_url.move_as_ok());
           }
         }
       } else if (tag_name == "pre") {
@@ -1604,7 +1620,8 @@ Result<vector<MessageEntity>> parse_html(string &text) {
 }
 
 vector<tl_object_ptr<telegram_api::MessageEntity>> get_input_message_entities(const ContactsManager *contacts_manager,
-                                                                              const vector<MessageEntity> &entities) {
+                                                                              const vector<MessageEntity> &entities,
+                                                                              const char *source) {
   vector<tl_object_ptr<telegram_api::MessageEntity>> result;
   for (auto &entity : entities) {
     switch (entity.type) {
@@ -1637,7 +1654,7 @@ vector<tl_object_ptr<telegram_api::MessageEntity>> get_input_message_entities(co
         break;
       case MessageEntity::Type::MentionName: {
         auto input_user = contacts_manager->get_input_user(entity.user_id);
-        CHECK(input_user != nullptr);
+        CHECK(input_user != nullptr) << source;
         result.push_back(make_tl_object<telegram_api::inputMessageEntityMentionName>(entity.offset, entity.length,
                                                                                      std::move(input_user)));
         break;
@@ -1745,12 +1762,11 @@ Result<vector<MessageEntity>> get_message_entities(const ContactsManager *contac
         if (!clean_input_string(entity_text_url->url_)) {
           return Status::Error(400, "MessageEntityTextUrl.url must be encoded in UTF-8");
         }
-        auto r_http_url = parse_url(entity_text_url->url_);
-        if (r_http_url.is_error()) {
-          return Status::Error(400, PSTRING() << "Wrong message entity: " << r_http_url.error().message());
+        auto r_url = check_url(entity_text_url->url_);
+        if (r_url.is_error()) {
+          return Status::Error(400, PSTRING() << "Wrong message entity: " << r_url.error().message());
         }
-        entities.emplace_back(MessageEntity::Type::TextUrl, entity->offset_, entity->length_,
-                              r_http_url.ok().get_url());
+        entities.emplace_back(MessageEntity::Type::TextUrl, entity->offset_, entity->length_, r_url.move_as_ok());
         break;
       }
       case td_api::textEntityTypeMentionName::ID: {
@@ -1842,14 +1858,14 @@ vector<MessageEntity> get_message_entities(const ContactsManager *contacts_manag
       case telegram_api::messageEntityTextUrl::ID: {
         // TODO const telegram_api::messageEntityTextUrl *
         auto entity_text_url = static_cast<telegram_api::messageEntityTextUrl *>(entity.get());
-        auto r_http_url = parse_url(entity_text_url->url_);
-        if (r_http_url.is_error()) {
-          LOG(ERROR) << "Wrong URL entity: \"" << entity_text_url->url_ << "\": " << r_http_url.error().message()
-                     << " from " << source;
+        auto r_url = check_url(entity_text_url->url_);
+        if (r_url.is_error()) {
+          LOG(ERROR) << "Wrong URL entity: \"" << entity_text_url->url_ << "\": " << r_url.error().message() << " from "
+                     << source;
           continue;
         }
         entities.emplace_back(MessageEntity::Type::TextUrl, entity_text_url->offset_, entity_text_url->length_,
-                              r_http_url.ok().get_url());
+                              r_url.move_as_ok());
         break;
       }
       case telegram_api::messageEntityMentionName::ID: {
@@ -1859,7 +1875,7 @@ vector<MessageEntity> get_message_entities(const ContactsManager *contacts_manag
           LOG(ERROR) << "Receive invalid " << user_id << " in MentionName from " << source;
           continue;
         }
-        if (!contacts_manager->have_user(user_id)) {
+        if (contacts_manager == nullptr || !contacts_manager->have_user(user_id)) {
           LOG(ERROR) << "Receive unknown " << user_id << " in MentionName from " << source;
           continue;
         }
@@ -1946,13 +1962,13 @@ vector<MessageEntity> get_message_entities(vector<tl_object_ptr<secret_api::Mess
           LOG(WARNING) << "Wrong URL entity: \"" << entity_text_url->url_ << '"';
           continue;
         }
-        auto r_http_url = parse_url(entity_text_url->url_);
-        if (r_http_url.is_error()) {
-          LOG(WARNING) << "Wrong URL entity: \"" << entity_text_url->url_ << "\": " << r_http_url.error().message();
+        auto r_url = check_url(entity_text_url->url_);
+        if (r_url.is_error()) {
+          LOG(WARNING) << "Wrong URL entity: \"" << entity_text_url->url_ << "\": " << r_url.error().message();
           continue;
         }
         entities.emplace_back(MessageEntity::Type::TextUrl, entity_text_url->offset_, entity_text_url->length_,
-                              r_http_url.ok().get_url());
+                              r_url.move_as_ok());
         break;
       }
       case secret_api::messageEntityMentionName::ID:

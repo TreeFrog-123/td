@@ -11,18 +11,23 @@
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/MessagesDb.h"
 #include "td/telegram/TdParameters.h"
+#include "td/telegram/Version.h"
 
-#include "td/actor/actor.h"
 #include "td/actor/MultiPromise.h"
 
 #include "td/db/BinlogKeyValue.h"
+#include "td/db/SqliteKeyValue.h"
+#include "td/db/SqliteKeyValueAsync.h"
+#include "td/db/SqliteKeyValueSafe.h"
 
 #include "td/utils/logging.h"
 #include "td/utils/port/path.h"
 #include "td/utils/Random.h"
 
 namespace td {
+
 namespace {
+
 std::string get_binlog_path(const TdParameters &parameters) {
   return PSTRING() << parameters.database_directory << "td" << (parameters.use_test_dc ? "_test" : "") << ".binlog";
 }
@@ -81,7 +86,14 @@ Status init_binlog(Binlog &binlog, string path, BinlogKeyValue<Binlog> &binlog_p
       case LogEvent::HandlerType::ToggleDialogIsPinnedOnServer:
       case LogEvent::HandlerType::ReorderPinnedDialogsOnServer:
       case LogEvent::HandlerType::SaveDialogDraftMessageOnServer:
+      case LogEvent::HandlerType::UpdateDialogNotificationSettingsOnServer:
+      case LogEvent::HandlerType::UpdateScopeNotificationSettingsOnServer:
+      case LogEvent::HandlerType::ResetAllNotificationSettingsOnServer:
+      case LogEvent::HandlerType::ChangeDialogReportSpamStateOnServer:
+      case LogEvent::HandlerType::GetDialogFromServer:
       case LogEvent::HandlerType::GetChannelDifference:
+      case LogEvent::HandlerType::ReadHistoryInSecretChat:
+      case LogEvent::HandlerType::ToggleDialogIsMarkedAsUnreadOnServer:
         events.to_messages_manager.push_back(event.clone());
         break;
       case LogEvent::HandlerType::BinlogPmcMagic:
@@ -137,7 +149,7 @@ BinlogPmcPtr TdDb::get_config_pmc() {
   return config_pmc_.get();
 }
 
-BigPmcPtr TdDb::get_sqlite_sync_pmc() {
+SqliteKeyValue *TdDb::get_sqlite_sync_pmc() {
   CHECK(common_kv_safe_);
   return &common_kv_safe_->get();
 }
@@ -298,7 +310,10 @@ Status TdDb::init_sqlite(int32 scheduler_id, const TdParameters &parameters, DbK
 
   if (dialog_db_was_created) {
     binlog_pmc.erase("unread_message_count");
+    binlog_pmc.erase("unread_dialog_count");
     binlog_pmc.erase("last_server_dialog_date");
+    binlog_pmc.erase("promoted_dialog_id");
+    binlog_pmc.erase("sponsored_dialog_id");
   }
   if (db_version == 0) {
     binlog_pmc.erase_by_prefix("top_dialogs");
@@ -421,4 +436,5 @@ void TdDb::with_db_path(std::function<void(CSlice)> callback) {
   SqliteDb::with_db_path(sqlite_path(), callback);
   callback(binlog_path());
 }
+
 }  // namespace td

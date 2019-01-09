@@ -10,6 +10,8 @@
 #include "td/telegram/files/FileLocation.h"
 #include "td/telegram/files/ResourceManager.h"
 
+#include "td/actor/actor.h"
+
 #include "td/utils/BufferedFd.h"
 #include "td/utils/crypto.h"
 #include "td/utils/port/FileFd.h"
@@ -60,7 +62,7 @@ class FileHashUploader : public FileLoaderActor {
 
   ActorShared<ResourceManager> resource_manager_;
 
-  enum { CalcSha, NetRequest, WaitNetResult } state_ = CalcSha;
+  enum class State : int32 { CalcSha, NetRequest, WaitNetResult } state_ = State::CalcSha;
   bool stop_flag_ = false;
   Sha256State sha256_state_;
 

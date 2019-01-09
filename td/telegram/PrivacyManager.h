@@ -9,6 +9,7 @@
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 
+#include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
 #include "td/telegram/net/NetQuery.h"
@@ -67,7 +68,7 @@ class PrivacyManager : public NetQueryCallback {
     }
 
    private:
-    enum class Type {
+    enum class Type : int32 {
       AllowContacts,
       AllowAll,
       AllowUsers,
@@ -123,5 +124,7 @@ class PrivacyManager : public NetQueryCallback {
   void on_result(NetQueryPtr query) override;
   Container<Promise<NetQueryPtr>> container_;
   void send_with_promise(NetQueryPtr query, Promise<NetQueryPtr> promise);
+
+  void hangup() override;
 };
 }  // namespace td

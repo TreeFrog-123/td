@@ -54,7 +54,7 @@ Status mkpath(CSlice path, int32 mode) {
   Status last_error = Status::OK();
   for (size_t i = 1; i < path.size(); i++) {
     if (path[i] == TD_DIR_SLASH) {
-      last_error = mkdir(path.substr(0, i).str(), mode);
+      last_error = mkdir(PSLICE() << path.substr(0, i), mode);
       if (last_error.is_error() && first_error.is_ok()) {
         first_error = last_error.clone();
       }
@@ -94,7 +94,7 @@ Result<string> realpath(CSlice slice, bool ignore_access_denied) {
   string res;
   char *err = skip_eintr_cstr([&] { return ::realpath(slice.c_str(), full_path); });
   if (err != full_path) {
-    if (ignore_access_denied && errno == EACCES) {
+    if (ignore_access_denied && (errno == EACCES || errno == EPERM)) {
       res = slice.str();
     } else {
       return OS_ERROR(PSLICE() << "Realpath failed for \"" << slice << '"');
@@ -332,9 +332,9 @@ Result<string> mkdtemp(CSlice dir, Slice prefix) {
   }
   dir_pattern.append(prefix.begin(), prefix.size());
 
-  for (auto it = 0; it < 20; it++) {
+  for (auto iter = 0; iter < 20; iter++) {
     auto path = dir_pattern;
-    for (int i = 0; i < 6 + it / 5; i++) {
+    for (int i = 0; i < 6 + iter / 5; i++) {
       path += static_cast<char>(Random::fast('a', 'z'));
     }
     auto status = mkdir(path);
@@ -364,9 +364,9 @@ Result<std::pair<FileFd, string>> mkstemp(CSlice dir) {
   }
   file_pattern += "tmp";
 
-  for (auto it = 0; it < 20; it++) {
+  for (auto iter = 0; iter < 20; iter++) {
     auto path = file_pattern;
-    for (int i = 0; i < 6 + it / 5; i++) {
+    for (int i = 0; i < 6 + iter / 5; i++) {
       path += static_cast<char>(Random::fast('a', 'z'));
     }
     auto r_file = FileFd::open(path, FileFd::Write | FileFd::Read | FileFd::CreateNew);

@@ -12,13 +12,17 @@
 #include "td/utils/port/RwMutex.h"
 #include "td/utils/port/thread_local.h"
 #include "td/utils/Random.h"
+#include "td/utils/ScopeGuard.h"
 
 #if TD_HAVE_OPENSSL
 #include <openssl/aes.h>
+#include <openssl/bio.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/md5.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/sha.h>
 #endif
 
@@ -28,6 +32,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <utility>
 
 namespace td {
@@ -69,13 +74,13 @@ uint64 pq_factorize(uint64 pq) {
     return 1;
   }
   uint64 g = 0;
-  for (int i = 0, it = 0; i < 3 || it < 1000; i++) {
+  for (int i = 0, iter = 0; i < 3 || iter < 1000; i++) {
     uint64 q = Random::fast(17, 32) % (pq - 1);
     uint64 x = Random::fast_uint64() % (pq - 1) + 1;
     uint64 y = x;
     int lim = 1 << (min(5, i) + 18);
     for (int j = 1; j < lim; j++) {
-      it++;
+      iter++;
       uint64 a = x;
       uint64 b = x;
       uint64 c = q;
@@ -164,14 +169,14 @@ static int pq_factorize_big(Slice pq_str, string *p_str, string *q_str) {
   BigNum pq = BigNum::from_binary(pq_str);
 
   bool found = false;
-  for (int i = 0, it = 0; !found && (i < 3 || it < 1000); i++) {
+  for (int i = 0, iter = 0; !found && (i < 3 || iter < 1000); i++) {
     int32 t = Random::fast(17, 32);
     a.set_value(Random::fast_uint32());
     b = a;
 
     int32 lim = 1 << (i + 23);
     for (int j = 1; j < lim; j++) {
-      it++;
+      iter++;
       BigNum::mod_mul(a, a, a, pq, context);
       a += t;
       if (BigNum::compare(a, pq) >= 0) {
@@ -236,7 +241,6 @@ int pq_factorize(Slice pq_str, string *p_str, string *q_str) {
   return 0;
 }
 
-/*** AES ***/
 static void aes_ige_xcrypt(const UInt256 &aes_key, UInt256 *aes_iv, Slice from, MutableSlice to, bool encrypt_flag) {
   AES_KEY key;
   int err;
@@ -277,6 +281,16 @@ void aes_cbc_encrypt(const UInt256 &aes_key, UInt128 *aes_iv, Slice from, Mutabl
 
 void aes_cbc_decrypt(const UInt256 &aes_key, UInt128 *aes_iv, Slice from, MutableSlice to) {
   aes_cbc_xcrypt(aes_key, aes_iv, from, to, false);
+}
+
+AesCbcState::AesCbcState(const UInt256 &key, const UInt128 &iv) : key_(key), iv_(iv) {
+}
+
+void AesCbcState::encrypt(Slice from, MutableSlice to) {
+  ::td::aes_cbc_encrypt(key_, &iv_, from, to);
+}
+void AesCbcState::decrypt(Slice from, MutableSlice to) {
+  ::td::aes_cbc_decrypt(key_, &iv_, from, to);
 }
 
 class AesCtrState::Impl {
@@ -340,6 +354,24 @@ void sha256(Slice data, MutableSlice output) {
   CHECK(result == output.ubegin());
 }
 
+void sha512(Slice data, MutableSlice output) {
+  CHECK(output.size() >= 64);
+  auto result = SHA512(data.ubegin(), data.size(), output.ubegin());
+  CHECK(result == output.ubegin());
+}
+
+string sha256(Slice data) {
+  string result(32, '\0');
+  sha256(data, result);
+  return result;
+}
+
+string sha512(Slice data) {
+  string result(64, '\0');
+  sha512(data, result);
+  return result;
+}
+
 struct Sha256StateImpl {
   SHA256_CTX ctx;
 };
@@ -369,18 +401,17 @@ void sha256_final(Sha256State *state, MutableSlice output) {
   state->impl.reset();
 }
 
-/*** md5 ***/
 void md5(Slice input, MutableSlice output) {
   CHECK(output.size() >= MD5_DIGEST_LENGTH);
   auto result = MD5(input.ubegin(), input.size(), output.ubegin());
   CHECK(result == output.ubegin());
 }
 
-void pbkdf2_sha256(Slice password, Slice salt, int iteration_count, MutableSlice dest) {
-  CHECK(dest.size() == 256 / 8) << dest.size();
-  CHECK(iteration_count > 0);
-  auto evp_md = EVP_sha256();
+static void pbkdf2_impl(Slice password, Slice salt, int iteration_count, MutableSlice dest, const EVP_MD *evp_md) {
   CHECK(evp_md != nullptr);
+  int hash_size = EVP_MD_size(evp_md);
+  CHECK(dest.size() == static_cast<size_t>(hash_size));
+  CHECK(iteration_count > 0);
 #if OPENSSL_VERSION_NUMBER < 0x10000000L
   HMAC_CTX ctx;
   HMAC_CTX_init(&ctx);
@@ -393,13 +424,14 @@ void pbkdf2_sha256(Slice password, Slice salt, int iteration_count, MutableSlice
   HMAC_CTX_cleanup(&ctx);
 
   if (iteration_count > 1) {
-    unsigned char buf[32];
+    CHECK(hash_size <= 64);
+    unsigned char buf[64];
     std::copy(dest.ubegin(), dest.uend(), buf);
     for (int iter = 1; iter < iteration_count; iter++) {
-      if (HMAC(evp_md, password.data(), password_len, buf, 32, buf, nullptr) == nullptr) {
+      if (HMAC(evp_md, password.data(), password_len, buf, hash_size, buf, nullptr) == nullptr) {
         LOG(FATAL) << "Failed to HMAC";
       }
-      for (int i = 0; i < 32; i++) {
+      for (int i = 0; i < hash_size; i++) {
         dest[i] ^= buf[i];
       }
     }
@@ -412,6 +444,14 @@ void pbkdf2_sha256(Slice password, Slice salt, int iteration_count, MutableSlice
 #endif
 }
 
+void pbkdf2_sha256(Slice password, Slice salt, int iteration_count, MutableSlice dest) {
+  pbkdf2_impl(password, salt, iteration_count, dest, EVP_sha256());
+}
+
+void pbkdf2_sha512(Slice password, Slice salt, int iteration_count, MutableSlice dest) {
+  pbkdf2_impl(password, salt, iteration_count, dest, EVP_sha512());
+}
+
 void hmac_sha256(Slice key, Slice message, MutableSlice dest) {
   CHECK(dest.size() == 256 / 8);
   unsigned int len = 0;
@@ -419,6 +459,122 @@ void hmac_sha256(Slice key, Slice message, MutableSlice dest) {
                      narrow_cast<int>(message.size()), dest.ubegin(), &len);
   CHECK(result == dest.ubegin());
   CHECK(len == dest.size());
+}
+
+static int get_evp_pkey_type(EVP_PKEY *pkey) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+  return EVP_PKEY_type(pkey->type);
+#else
+  return EVP_PKEY_base_id(pkey);
+#endif
+}
+
+Result<BufferSlice> rsa_encrypt_pkcs1_oaep(Slice public_key, Slice data) {
+  BIO *mem_bio = BIO_new_mem_buf(const_cast<void *>(static_cast<const void *>(public_key.data())),
+                                 narrow_cast<int>(public_key.size()));
+  SCOPE_EXIT {
+    BIO_vfree(mem_bio);
+  };
+
+  EVP_PKEY *pkey = PEM_read_bio_PUBKEY(mem_bio, nullptr, nullptr, nullptr);
+  if (!pkey) {
+    return Status::Error("Cannot read public key");
+  }
+  SCOPE_EXIT {
+    EVP_PKEY_free(pkey);
+  };
+  if (get_evp_pkey_type(pkey) != EVP_PKEY_RSA) {
+    return Status::Error("Wrong key type, expected RSA");
+  }
+
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
+  RSA *rsa = pkey->pkey.rsa;
+  int outlen = RSA_size(rsa);
+  BufferSlice res(outlen);
+  if (RSA_public_encrypt(narrow_cast<int>(data.size()), const_cast<unsigned char *>(data.ubegin()),
+                         res.as_slice().ubegin(), rsa, RSA_PKCS1_OAEP_PADDING) != outlen) {
+#else
+  EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, nullptr);
+  if (!ctx) {
+    return Status::Error("Cannot create EVP_PKEY_CTX");
+  }
+  SCOPE_EXIT {
+    EVP_PKEY_CTX_free(ctx);
+  };
+
+  if (EVP_PKEY_encrypt_init(ctx) <= 0) {
+    return Status::Error("Cannot init EVP_PKEY_CTX");
+  }
+  if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+    return Status::Error("Cannot set RSA_PKCS1_OAEP padding in EVP_PKEY_CTX");
+  }
+
+  size_t outlen;
+  if (EVP_PKEY_encrypt(ctx, nullptr, &outlen, data.ubegin(), data.size()) <= 0) {
+    return Status::Error("Cannot calculate encrypted length");
+  }
+  BufferSlice res(outlen);
+  if (EVP_PKEY_encrypt(ctx, res.as_slice().ubegin(), &outlen, data.ubegin(), data.size()) <= 0) {
+#endif
+    return Status::Error("Cannot encrypt");
+  }
+  return std::move(res);
+}
+
+Result<BufferSlice> rsa_decrypt_pkcs1_oaep(Slice private_key, Slice data) {
+  BIO *mem_bio = BIO_new_mem_buf(const_cast<void *>(static_cast<const void *>(private_key.data())),
+                                 narrow_cast<int>(private_key.size()));
+  SCOPE_EXIT {
+    BIO_vfree(mem_bio);
+  };
+
+  EVP_PKEY *pkey = PEM_read_bio_PrivateKey(mem_bio, nullptr, nullptr, nullptr);
+  if (!pkey) {
+    return Status::Error("Cannot read private key");
+  }
+  SCOPE_EXIT {
+    EVP_PKEY_free(pkey);
+  };
+  if (get_evp_pkey_type(pkey) != EVP_PKEY_RSA) {
+    return Status::Error("Wrong key type, expected RSA");
+  }
+
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
+  RSA *rsa = pkey->pkey.rsa;
+  size_t outlen = RSA_size(rsa);
+  BufferSlice res(outlen);
+  auto inlen = RSA_private_decrypt(narrow_cast<int>(data.size()), const_cast<unsigned char *>(data.ubegin()),
+                                   res.as_slice().ubegin(), rsa, RSA_PKCS1_OAEP_PADDING);
+  if (inlen == -1) {
+    return Status::Error("Cannot decrypt");
+  }
+  res.truncate(inlen);
+#else
+  EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, nullptr);
+  if (!ctx) {
+    return Status::Error("Cannot create EVP_PKEY_CTX");
+  }
+  SCOPE_EXIT {
+    EVP_PKEY_CTX_free(ctx);
+  };
+
+  if (EVP_PKEY_decrypt_init(ctx) <= 0) {
+    return Status::Error("Cannot init EVP_PKEY_CTX");
+  }
+  if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+    return Status::Error("Cannot set RSA_PKCS1_OAEP padding in EVP_PKEY_CTX");
+  }
+
+  size_t outlen;
+  if (EVP_PKEY_decrypt(ctx, nullptr, &outlen, data.ubegin(), data.size()) <= 0) {
+    return Status::Error("Cannot calculate decrypted length");
+  }
+  BufferSlice res(outlen);
+  if (EVP_PKEY_decrypt(ctx, res.as_slice().ubegin(), &outlen, data.ubegin(), data.size()) <= 0) {
+    return Status::Error("Cannot decrypt");
+  }
+#endif
+  return std::move(res);
 }
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -456,6 +612,8 @@ void openssl_locking_function(int mode, int n, const char *file, int line) {
 
 void init_openssl_threads() {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
+  static std::mutex init_mutex;
+  std::lock_guard<std::mutex> lock(init_mutex);
   if (CRYPTO_get_locking_callback() == nullptr) {
 #if OPENSSL_VERSION_NUMBER >= 0x10000000L
     CRYPTO_THREADID_set_callback(openssl_threadid_callback);

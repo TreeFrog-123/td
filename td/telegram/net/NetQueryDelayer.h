@@ -5,6 +5,7 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
+
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/actor/actor.h"
@@ -13,6 +14,7 @@
 #include "td/utils/Container.h"
 
 namespace td {
+
 class NetQueryDelayer : public Actor {
  public:
   explicit NetQueryDelayer(ActorShared<> parent) : parent_(std::move(parent)) {
@@ -32,4 +34,5 @@ class NetQueryDelayer : public Actor {
 
   void tear_down() override;
 };
+
 }  // namespace td

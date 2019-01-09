@@ -6,11 +6,13 @@
 //
 #pragma once
 
+#include "td/telegram/net/MtprotoHeader.h"
 #include "td/telegram/net/NetQuery.h"
 #include "td/telegram/StateManager.h"
 #include "td/telegram/TdCallback.h"
 #include "td/telegram/TdDb.h"
 #include "td/telegram/TdParameters.h"
+#include "td/telegram/TermsOfService.h"
 
 #include "td/telegram/td_api.h"
 
@@ -30,12 +32,12 @@
 #include <utility>
 
 namespace td {
+
 class AnimationsManager;
 class AudiosManager;
 class AuthManager;
 class CallManager;
 class CallbackQueriesManager;
-class ChangePhoneNumberManager;
 class ConfigManager;
 class ContactsManager;
 class DeviceTokenManager;
@@ -43,10 +45,13 @@ class DocumentsManager;
 class FileManager;
 class InlineQueriesManager;
 class HashtagHints;
+class LanguagePackManager;
 class MessagesManager;
 class NetStatsManager;
 class PasswordManager;
+class PhoneNumberManager;
 class PrivacyManager;
+class SecureManager;
 class SecretChatsManager;
 class StickersManager;
 class StorageManager;
@@ -90,6 +95,8 @@ class Td final : public NetQueryCallback {
 
   void force_get_difference();
 
+  void schedule_get_terms_of_service(int32 expires_in);
+
   void on_result(NetQueryPtr query) override;
   void on_connection_state_changed(StateManager::State new_state);
   void on_authorization_lost();
@@ -125,8 +132,6 @@ class Td final : public NetQueryCallback {
   ActorOwn<AnimationsManager> animations_manager_actor_;
   std::unique_ptr<AuthManager> auth_manager_;
   ActorOwn<AuthManager> auth_manager_actor_;
-  std::unique_ptr<ChangePhoneNumberManager> change_phone_number_manager_;
-  ActorOwn<ChangePhoneNumberManager> change_phone_number_manager_actor_;
   std::unique_ptr<ContactsManager> contacts_manager_;
   ActorOwn<ContactsManager> contacts_manager_actor_;
   std::unique_ptr<FileManager> file_manager_;
@@ -143,16 +148,21 @@ class Td final : public NetQueryCallback {
   ActorOwn<WebPagesManager> web_pages_manager_actor_;
 
   ActorOwn<CallManager> call_manager_;
+  ActorOwn<PhoneNumberManager> change_phone_number_manager_;
   ActorOwn<ConfigManager> config_manager_;
+  ActorOwn<PhoneNumberManager> confirm_phone_number_manager_;
   ActorOwn<DeviceTokenManager> device_token_manager_;
   ActorOwn<HashtagHints> hashtag_hints_;
+  ActorOwn<LanguagePackManager> language_pack_manager_;
   ActorOwn<NetStatsManager> net_stats_manager_;
   ActorOwn<PasswordManager> password_manager_;
   ActorOwn<PrivacyManager> privacy_manager_;
+  ActorOwn<SecureManager> secure_manager_;
   ActorOwn<SecretChatsManager> secret_chats_manager_;
   ActorOwn<StateManager> state_manager_;
   ActorOwn<StorageManager> storage_manager_;
   ActorOwn<TopDialogManager> top_dialog_manager_;
+  ActorOwn<PhoneNumberManager> verify_phone_number_manager_;
 
   class ResultHandler : public std::enable_shared_from_this<ResultHandler> {
    public:
@@ -193,11 +203,12 @@ class Td final : public NetQueryCallback {
   static td_api::object_ptr<td_api::Object> static_request(td_api::object_ptr<td_api::Function> function);
 
  private:
-  static constexpr const char *TDLIB_VERSION = "1.2.0";
+  static constexpr const char *TDLIB_VERSION = "1.3.0";
   static constexpr int64 ONLINE_ALARM_ID = 0;
   static constexpr int32 ONLINE_TIMEOUT = 240;
   static constexpr int64 PING_SERVER_ALARM_ID = -1;
   static constexpr int32 PING_SERVER_TIMEOUT = 300;
+  static constexpr int64 TERMS_OF_SERVICE_ALARM_ID = -2;
 
   void send_result(uint64 id, tl_object_ptr<td_api::Object> object);
   void send_error(uint64 id, Status error);
@@ -215,6 +226,8 @@ class Td final : public NetQueryCallback {
 
   void dec_stop_cnt();
 
+  MtprotoHeader::Options options_;
+
   TdParameters parameters_;
 
   unique_ptr<TdCallback> callback_;
@@ -228,7 +241,7 @@ class Td final : public NetQueryCallback {
   bool destroy_flag_ = false;
   int close_flag_ = 0;
 
-  enum class State { WaitParameters, Decrypt, Run, Close } state_ = State::WaitParameters;
+  enum class State : int32 { WaitParameters, Decrypt, Run, Close } state_ = State::WaitParameters;
   EncryptionInfo encryption_info_;
 
   vector<std::pair<uint64, std::shared_ptr<ResultHandler>>> result_handlers_;
@@ -240,22 +253,31 @@ class Td final : public NetQueryCallback {
 
   int64 alarm_id_ = 1;
   std::unordered_map<int64, uint64> pending_alarms_;
-  MultiTimeout alarm_timeout_;
+  MultiTimeout alarm_timeout_{"AlarmTimeout"};
+
+  vector<std::pair<uint64, td_api::object_ptr<td_api::Function>>> pending_preauthentication_requests_;
+
+  template <class T>
+  void complete_pending_preauthentication_requests(const T &func);
 
   static void on_alarm_timeout_callback(void *td_ptr, int64 alarm_id);
   void on_alarm_timeout(int64 alarm_id);
 
+  void on_get_terms_of_service(Result<std::pair<int32, TermsOfService>> result, bool dummy);
+
   template <class T>
-  friend class RequestActor;              // uses send_result/send_error
-  friend class TestQuery;                 // uses send_result/send_error
-  friend class AuthManager;               // uses send_result/send_error
-  friend class ChangePhoneNumberManager;  // uses send_result/send_error
+  friend class RequestActor;        // uses send_result/send_error
+  friend class TestQuery;           // uses send_result/send_error, TODO pass Promise<>
+  friend class AuthManager;         // uses send_result/send_error, TODO pass Promise<>
+  friend class PhoneNumberManager;  // uses send_result/send_error, TODO pass Promise<>
 
   void add_handler(uint64 id, std::shared_ptr<ResultHandler> handler);
   std::shared_ptr<ResultHandler> extract_handler(uint64 id);
   void invalidate_handler(ResultHandler *handler);
   void clear_handlers();
   // void destroy_handler(ResultHandler *handler);
+
+  void clear_requests();
 
   static bool is_internal_config_option(Slice name);
 
@@ -276,15 +298,17 @@ class Td final : public NetQueryCallback {
   std::shared_ptr<UploadFileCallback> upload_file_callback_;
 
   template <class T>
-  auto create_request_promise(uint64 id) {
-    return PromiseCreator::lambda([id = id, actor_id = actor_id(this)](Result<T> r_state) {
-      if (r_state.is_error()) {
-        send_closure(actor_id, &Td::send_error, id, r_state.move_as_error());
-      } else {
-        send_closure(actor_id, &Td::send_result, id, r_state.move_as_ok());
-      }
-    });
-  }
+  Promise<T> create_request_promise(uint64 id);
+
+  Promise<Unit> create_ok_request_promise(uint64 id);
+
+  static bool is_authentication_request(int32 id);
+
+  static bool is_synchronous_request(int32 id);
+
+  static bool is_preinitialization_request(int32 id);
+
+  static bool is_preauthentication_request(int32 id);
 
   template <class T>
   void on_request(uint64 id, const T &request) = delete;
@@ -463,6 +487,8 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, const td_api::getChatMessageByDate &request);
 
+  void on_request(uint64 id, td_api::getChatMessageCount &request);
+
   void on_request(uint64 id, const td_api::deleteMessages &request);
 
   void on_request(uint64 id, const td_api::deleteChatMessagesFromUser &request);
@@ -479,9 +505,13 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, const td_api::sendChatSetTtlMessage &request);
 
+  void on_request(uint64 id, td_api::addLocalMessage &request);
+
   void on_request(uint64 id, td_api::editMessageText &request);
 
   void on_request(uint64 id, td_api::editMessageLiveLocation &request);
+
+  void on_request(uint64 id, td_api::editMessageMedia &request);
 
   void on_request(uint64 id, td_api::editMessageCaption &request);
 
@@ -490,6 +520,8 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, td_api::editInlineMessageText &request);
 
   void on_request(uint64 id, td_api::editInlineMessageLiveLocation &request);
+
+  void on_request(uint64 id, td_api::editInlineMessageMedia &request);
 
   void on_request(uint64 id, td_api::editInlineMessageCaption &request);
 
@@ -543,15 +575,23 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, td_api::setChatTitle &request);
 
-  void on_request(uint64 id, td_api::setChatPhoto &request);
+  void on_request(uint64 id, const td_api::setChatPhoto &request);
 
   void on_request(uint64 id, td_api::setChatDraftMessage &request);
 
   void on_request(uint64 id, const td_api::toggleChatIsPinned &request);
 
+  void on_request(uint64 id, const td_api::toggleChatIsMarkedAsUnread &request);
+
+  void on_request(uint64 id, const td_api::toggleChatDefaultDisableNotification &request);
+
   void on_request(uint64 id, const td_api::setPinnedChats &request);
 
   void on_request(uint64 id, td_api::setChatClientData &request);
+
+  void on_request(uint64 id, const td_api::joinChat &request);
+
+  void on_request(uint64 id, const td_api::leaveChat &request);
 
   void on_request(uint64 id, const td_api::addChatMember &request);
 
@@ -572,6 +612,8 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, td_api::joinChatByInviteLink &request);
 
   void on_request(uint64 id, td_api::getChatEventLog &request);
+
+  void on_request(uint64 id, const td_api::clearAllDraftMessages &request);
 
   void on_request(uint64 id, const td_api::downloadFile &request);
 
@@ -594,6 +636,8 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, const td_api::getBlockedUsers &request);
 
   void on_request(uint64 id, td_api::importContacts &request);
+
+  void on_request(uint64 id, const td_api::getContacts &request);
 
   void on_request(uint64 id, td_api::searchContacts &request);
 
@@ -703,9 +747,11 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, td_api::removeFavoriteSticker &request);
 
-  void on_request(uint64 id, const td_api::getNotificationSettings &request);
+  void on_request(uint64 id, const td_api::getScopeNotificationSettings &request);
 
-  void on_request(uint64 id, td_api::setNotificationSettings &request);
+  void on_request(uint64 id, td_api::setChatNotificationSettings &request);
+
+  void on_request(uint64 id, td_api::setScopeNotificationSettings &request);
 
   void on_request(uint64 id, const td_api::resetAllNotificationSettings &request);
 
@@ -714,6 +760,20 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, const td_api::changeChatReportSpamState &request);
 
   void on_request(uint64 id, td_api::reportChat &request);
+
+  void on_request(uint64 id, const td_api::getMapThumbnailFile &request);
+
+  void on_request(uint64 id, const td_api::getLocalizationTargetInfo &request);
+
+  void on_request(uint64 id, td_api::getLanguagePackStrings &request);
+
+  void on_request(uint64 id, td_api::setCustomLanguagePack &request);
+
+  void on_request(uint64 id, td_api::editCustomLanguagePackInfo &request);
+
+  void on_request(uint64 id, td_api::setCustomLanguagePackString &request);
+
+  void on_request(uint64 id, td_api::deleteLanguagePack &request);
 
   void on_request(uint64 id, td_api::getOption &request);
 
@@ -745,6 +805,40 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, const td_api::deleteSavedCredentials &request);
 
+  void on_request(uint64 id, td_api::getPassportElement &request);
+
+  void on_request(uint64 id, td_api::getAllPassportElements &request);
+
+  void on_request(uint64 id, td_api::setPassportElement &request);
+
+  void on_request(uint64 id, const td_api::deletePassportElement &request);
+
+  void on_request(uint64 id, td_api::setPassportElementErrors &request);
+
+  void on_request(uint64 id, td_api::getPreferredCountryLanguage &request);
+
+  void on_request(uint64 id, td_api::sendPhoneNumberVerificationCode &request);
+
+  void on_request(uint64 id, const td_api::resendPhoneNumberVerificationCode &request);
+
+  void on_request(uint64 id, td_api::checkPhoneNumberVerificationCode &request);
+
+  void on_request(uint64 id, td_api::sendEmailAddressVerificationCode &request);
+
+  void on_request(uint64 id, const td_api::resendEmailAddressVerificationCode &request);
+
+  void on_request(uint64 id, td_api::checkEmailAddressVerificationCode &request);
+
+  void on_request(uint64 id, td_api::getPassportAuthorizationForm &request);
+
+  void on_request(uint64 id, td_api::sendPassportAuthorizationForm &request);
+
+  void on_request(uint64 id, td_api::sendPhoneNumberConfirmationCode &request);
+
+  void on_request(uint64 id, const td_api::resendPhoneNumberConfirmationCode &request);
+
+  void on_request(uint64 id, td_api::checkPhoneNumberConfirmationCode &request);
+
   void on_request(uint64 id, const td_api::getSupportUser &request);
 
   void on_request(uint64 id, const td_api::getWallpapers &request);
@@ -763,15 +857,29 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, td_api::removeRecentHashtag &request);
 
+  void on_request(uint64 id, td_api::acceptTermsOfService &request);
+
   void on_request(uint64 id, const td_api::getCountryCode &request);
 
   void on_request(uint64 id, const td_api::getInviteText &request);
 
-  void on_request(uint64 id, const td_api::getTermsOfService &request);
+  void on_request(uint64 id, td_api::getDeepLinkInfo &request);
 
-  void on_request(uint64 id, const td_api::getProxy &request);
+  void on_request(uint64 id, td_api::addProxy &request);
 
-  void on_request(uint64 id, const td_api::setProxy &request);
+  void on_request(uint64 id, td_api::editProxy &request);
+
+  void on_request(uint64 id, const td_api::enableProxy &request);
+
+  void on_request(uint64 id, const td_api::disableProxy &request);
+
+  void on_request(uint64 id, const td_api::removeProxy &request);
+
+  void on_request(uint64 id, const td_api::getProxies &request);
+
+  void on_request(uint64 id, const td_api::getProxyLink &request);
+
+  void on_request(uint64 id, const td_api::pingProxy &request);
 
   void on_request(uint64 id, const td_api::getTextEntities &request);
 
@@ -780,6 +888,10 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, const td_api::getFileMimeType &request);
 
   void on_request(uint64 id, const td_api::getFileExtension &request);
+
+  void on_request(uint64 id, const td_api::cleanFileName &request);
+
+  void on_request(uint64 id, const td_api::getLanguagePackString &request);
 
   // test
   void on_request(uint64 id, td_api::testNetwork &request);
@@ -801,6 +913,8 @@ class Td final : public NetQueryCallback {
   static td_api::object_ptr<td_api::Object> do_static_request(td_api::parseTextEntities &request);
   static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getFileMimeType &request);
   static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getFileExtension &request);
+  static td_api::object_ptr<td_api::Object> do_static_request(const td_api::cleanFileName &request);
+  static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getLanguagePackString &request);
 
   Status init(DbKey key) TD_WARN_UNUSED_RESULT;
   void clear();

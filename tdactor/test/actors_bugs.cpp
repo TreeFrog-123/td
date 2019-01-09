@@ -6,6 +6,7 @@
 //
 #include "td/utils/tests.h"
 
+#include "td/actor/actor.h"
 #include "td/actor/Timeout.h"
 
 using namespace td;
@@ -24,7 +25,7 @@ TEST(MultiTimeout, bug) {
 
   {
     auto guard = sched.get_current_guard();
-    multi_timeout = std::make_unique<MultiTimeout>();
+    multi_timeout = std::make_unique<MultiTimeout>("MultiTimeout");
     data.multi_timeout = multi_timeout.get();
     multi_timeout->set_callback([](void *void_data, int64 key) {
       auto &data = *static_cast<Data *>(void_data);

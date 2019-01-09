@@ -6,62 +6,14 @@
 //
 #include "td/net/Socks5.h"
 
-#include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
-#include "td/utils/port/Fd.h"
 #include "td/utils/Slice.h"
 
 namespace td {
 
-static int VERBOSITY_NAME(socks5) = VERBOSITY_NAME(DEBUG);
-
-Socks5::Socks5(SocketFd socket_fd, IPAddress ip_address, string username, string password,
-               std::unique_ptr<Callback> callback, ActorShared<> parent)
-    : fd_(std::move(socket_fd))
-    , ip_address_(std::move(ip_address))
-    , username_(std::move(username))
-    , password_(std::move(password))
-    , callback_(std::move(callback))
-    , parent_(std::move(parent)) {
-}
-
-void Socks5::on_error(Status status) {
-  CHECK(status.is_error());
-  VLOG(socks5) << "Receive " << status;
-  if (callback_) {
-    callback_->set_result(std::move(status));
-    callback_.reset();
-  }
-  stop();
-}
-
-void Socks5::tear_down() {
-  VLOG(socks5) << "Finish to connect to proxy";
-  unsubscribe(fd_.get_fd());
-  fd_.get_fd().set_observer(nullptr);
-  if (callback_) {
-    callback_->set_result(std::move(fd_));
-    callback_.reset();
-  }
-}
-
-void Socks5::hangup() {
-  on_error(Status::Error("Cancelled"));
-}
-
-void Socks5::start_up() {
-  VLOG(socks5) << "Begin to connect to proxy";
-  fd_.get_fd().set_observer(this);
-  subscribe(fd_.get_fd());
-  set_timeout_in(10);
-  if (can_write(fd_)) {
-    loop();
-  }
-}
-
 void Socks5::send_greeting() {
-  VLOG(socks5) << "Send greeting to proxy";
+  VLOG(proxy) << "Send greeting to proxy";
   CHECK(state_ == State::SendGreeting);
   state_ = State::WaitGreetingResponse;
 
@@ -80,7 +32,7 @@ void Socks5::send_greeting() {
 
 Status Socks5::wait_greeting_response() {
   auto &buf = fd_.input_buffer();
-  VLOG(socks5) << "Receive greeting response of size " << buf.size();
+  VLOG(proxy) << "Receive greeting response of size " << buf.size();
   if (buf.size() < 2) {
     return Status::OK();
   }
@@ -91,7 +43,6 @@ Status Socks5::wait_greeting_response() {
   }
   auto authentication_method = slice[1];
   if (authentication_method == '\0') {
-    state_ = State::SendIpAddress;
     send_ip_address();
     return Status::OK();
   }
@@ -102,7 +53,7 @@ Status Socks5::wait_greeting_response() {
 }
 
 Status Socks5::send_username_password() {
-  VLOG(socks5) << "Send username and password";
+  VLOG(proxy) << "Send username and password";
   if (username_.size() >= 128) {
     return Status::Error("Username is too long");
   }
@@ -124,7 +75,7 @@ Status Socks5::send_username_password() {
 
 Status Socks5::wait_password_response() {
   auto &buf = fd_.input_buffer();
-  VLOG(socks5) << "Receive password response of size " << buf.size();
+  VLOG(proxy) << "Receive password response of size " << buf.size();
   if (buf.size() < 2) {
     return Status::OK();
   }
@@ -137,14 +88,12 @@ Status Socks5::wait_password_response() {
     return Status::Error("Wrong username or password");
   }
 
-  state_ = State::SendIpAddress;
   send_ip_address();
   return Status::OK();
 }
 
 void Socks5::send_ip_address() {
-  VLOG(socks5) << "Send IP address";
-  CHECK(state_ == State::SendIpAddress);
+  VLOG(proxy) << "Send IP address";
   callback_->on_connected();
   string request;
   request += '\x05';
@@ -171,7 +120,7 @@ void Socks5::send_ip_address() {
 Status Socks5::wait_ip_address_response() {
   CHECK(state_ == State::WaitIpAddressResponse);
   auto it = fd_.input_buffer().clone();
-  VLOG(socks5) << "Receive IP address response of size " << it.size();
+  VLOG(proxy) << "Receive IP address response of size " << it.size();
   if (it.size() < 4) {
     return Status::OK();
   }
@@ -183,23 +132,26 @@ Status Socks5::wait_ip_address_response() {
   }
   it.advance(1, c_slice);
   if (c != '\0') {
-    return Status::Error(PSLICE() << tag("code", c));
+    return Status::Error(PSLICE() << "Receive error code " << static_cast<int32>(c) << " from server");
   }
   it.advance(1, c_slice);
   if (c != '\0') {
     return Status::Error("byte must be zero");
   }
   it.advance(1, c_slice);
+  size_t total_size = 6;
   if (c == '\x01') {
     if (it.size() < 4) {
       return Status::OK();
     }
     it.advance(4);
+    total_size += 4;
   } else if (c == '\x04') {
     if (it.size() < 16) {
       return Status::OK();
     }
     it.advance(16);
+    total_size += 16;
   } else {
     return Status::Error("Invalid response");
   }
@@ -207,43 +159,29 @@ Status Socks5::wait_ip_address_response() {
     return Status::OK();
   }
   it.advance(2);
+  fd_.input_buffer().advance(total_size);
   stop();
   return Status::OK();
 }
 
-void Socks5::loop() {
-  auto status = [&] {
-    TRY_STATUS(fd_.flush_read());
-    switch (state_) {
-      case State::SendGreeting:
-        send_greeting();
-        break;
-      case State::WaitGreetingResponse:
-        TRY_STATUS(wait_greeting_response());
-        break;
-      case State::WaitPasswordResponse:
-        TRY_STATUS(wait_password_response());
-        break;
-      case State::WaitIpAddressResponse:
-        TRY_STATUS(wait_ip_address_response());
-        break;
-      case State::SendIpAddress:
-      case State::Stop:
-        UNREACHABLE();
-    }
-    TRY_STATUS(fd_.flush_write());
-    return Status::OK();
-  }();
-  if (status.is_error()) {
-    on_error(std::move(status));
+Status Socks5::loop_impl() {
+  switch (state_) {
+    case State::SendGreeting:
+      send_greeting();
+      break;
+    case State::WaitGreetingResponse:
+      TRY_STATUS(wait_greeting_response());
+      break;
+    case State::WaitPasswordResponse:
+      TRY_STATUS(wait_password_response());
+      break;
+    case State::WaitIpAddressResponse:
+      TRY_STATUS(wait_ip_address_response());
+      break;
+    default:
+      UNREACHABLE();
   }
-  if (can_close(fd_)) {
-    on_error(Status::Error("Connection closed"));
-  }
-}
-
-void Socks5::timeout_expired() {
-  on_error(Status::Error("Timeout expired"));
+  return Status::OK();
 }
 
 }  // namespace td

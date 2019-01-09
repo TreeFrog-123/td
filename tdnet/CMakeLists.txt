@@ -14,11 +14,13 @@ set(TDNET_SOURCE
   td/net/HttpFile.cpp
   td/net/HttpInboundConnection.cpp
   td/net/HttpOutboundConnection.cpp
+  td/net/HttpProxy.cpp
   td/net/HttpQuery.cpp
   td/net/HttpReader.cpp
   td/net/Socks5.cpp
-  td/net/SslFd.cpp
+  td/net/SslStream.cpp
   td/net/TcpListener.cpp
+  td/net/TransparentProxy.cpp
   td/net/Wget.cpp
 
   td/net/GetHostByNameActor.h
@@ -29,12 +31,14 @@ set(TDNET_SOURCE
   td/net/HttpHeaderCreator.h
   td/net/HttpInboundConnection.h
   td/net/HttpOutboundConnection.h
+  td/net/HttpProxy.h
   td/net/HttpQuery.h
   td/net/HttpReader.h
   td/net/NetStats.h
   td/net/Socks5.h
-  td/net/SslFd.h
+  td/net/SslStream.h
   td/net/TcpListener.h
+  td/net/TransparentProxy.h
   td/net/Wget.h
 )
 
@@ -45,6 +49,10 @@ add_library(tdnet STATIC ${TDNET_SOURCE})
 target_include_directories(tdnet PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 target_include_directories(tdnet SYSTEM PUBLIC $<BUILD_INTERFACE:${OPENSSL_INCLUDE_DIR}>)
 target_link_libraries(tdnet PUBLIC tdutils tdactor ${OPENSSL_LIBRARIES} PRIVATE ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
+
+if (WIN32)
+  target_link_libraries(tdnet PRIVATE Crypt32)
+endif()
 
 install(TARGETS tdnet EXPORT TdTargets
   LIBRARY DESTINATION lib

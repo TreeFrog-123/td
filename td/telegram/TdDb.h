@@ -6,15 +6,14 @@
 //
 #pragma once
 
+#include "td/actor/PromiseFuture.h"
+
 #include "td/db/binlog/Binlog.h"
 #include "td/db/binlog/BinlogEvent.h"
 #include "td/db/binlog/ConcurrentBinlog.h"
 #include "td/db/BinlogKeyValue.h"
 #include "td/db/DbKey.h"
 #include "td/db/Pmc.h"
-#include "td/db/SqliteKeyValue.h"
-#include "td/db/SqliteKeyValueAsync.h"
-#include "td/db/SqliteKeyValueSafe.h"
 
 #include "td/telegram/TdParameters.h"
 
@@ -75,7 +74,7 @@ class TdDb {
   BinlogPmcPtr get_binlog_pmc();
   BinlogPmcPtr get_config_pmc();
 
-  BigPmcPtr get_sqlite_sync_pmc();
+  SqliteKeyValue *get_sqlite_sync_pmc();
   SqliteKeyValueAsyncInterface *get_sqlite_pmc();
   CSlice binlog_path() const;
   CSlice sqlite_path() const;

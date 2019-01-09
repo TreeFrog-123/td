@@ -39,8 +39,13 @@
   flag = ((flags_parse >> bit_offset_parse) & 1) != 0; \
   bit_offset_parse++
 
-#define END_PARSE_FLAGS()       \
-  CHECK(bit_offset_parse < 31); \
+#define END_PARSE_FLAGS()                                    \
+  CHECK(bit_offset_parse < 31);                              \
+  CHECK((flags_parse & ~((1 << bit_offset_parse) - 1)) == 0) \
+      << flags_parse << " " << bit_offset_parse << " " << parser.version();
+
+#define END_PARSE_FLAGS_GENERIC() \
+  CHECK(bit_offset_parse < 31);   \
   CHECK((flags_parse & ~((1 << bit_offset_parse) - 1)) == 0) << flags_parse << " " << bit_offset_parse;
 
 namespace td {
@@ -182,13 +187,15 @@ string serialize(const T &object) {
   if (!is_aligned_pointer<4>(key.data())) {
     auto ptr = StackAllocator::alloc(length);
     MutableSlice data = ptr.as_slice();
-    TlStorerUnsafe storer(data.begin());
+    TlStorerUnsafe storer(data.ubegin());
     store(object, storer);
+    CHECK(storer.get_buf() == data.uend());
     key.assign(data.begin(), data.size());
   } else {
     MutableSlice data = key;
-    TlStorerUnsafe storer(data.begin());
+    TlStorerUnsafe storer(data.ubegin());
     store(object, storer);
+    CHECK(storer.get_buf() == data.uend());
   }
   return key;
 }

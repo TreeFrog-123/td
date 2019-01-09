@@ -58,6 +58,8 @@ class ServerMessageId {
   }
 };
 
+enum class MessageType : int32 { None, Server, Local, YetUnsent };
+
 class MessageId {
   int64 id = 0;
 
@@ -101,6 +103,23 @@ class MessageId {
     return id;
   }
 
+  MessageType get_type() const {
+    if (id <= 0 || id > max().get()) {
+      return MessageType::None;
+    }
+    if ((id & FULL_TYPE_MASK) == 0) {
+      return MessageType::Server;
+    }
+    switch (id & TYPE_MASK) {
+      case TYPE_YET_UNSENT:
+        return MessageType::YetUnsent;
+      case TYPE_LOCAL:
+        return MessageType::Local;
+      default:
+        return MessageType::None;
+    }
+  }
+
   bool is_yet_unsent() const {
     CHECK(is_valid());
     return (id & TYPE_MASK) == TYPE_YET_UNSENT;
@@ -119,6 +138,11 @@ class MessageId {
   ServerMessageId get_server_message_id() const {
     CHECK(id == 0 || is_server());
     return ServerMessageId(narrow_cast<int32>(id >> SERVER_ID_SHIFT));
+  }
+
+  // returns greatest server message id not bigger than this message id
+  MessageId get_prev_server_message_id() const {
+    return MessageId(id & ~FULL_TYPE_MASK);
   }
 
   // returns smallest server message id not less than this message id

@@ -8,7 +8,11 @@
 
 #include "td/telegram/Global.h"
 
+#include "td/utils/misc.h"
+#include "td/utils/Slice.h"
+
 namespace td {
+
 ListNode net_query_list_;
 
 int32 NetQuery::get_my_id() {
@@ -21,18 +25,38 @@ void NetQuery::on_net_write(size_t size) {
   }
   G()->get_net_stats_file_callbacks().at(file_type_)->on_write(size);
 }
+
 void NetQuery::on_net_read(size_t size) {
   if (file_type_ == -1) {
     return;
   }
   G()->get_net_stats_file_callbacks().at(file_type_)->on_read(size);
 }
+
 int32 NetQuery::tl_magic(const BufferSlice &buffer_slice) {
   auto slice = buffer_slice.as_slice();
   if (slice.size() < 4) {
     return 0;
   }
   return as<int32>(slice.begin());
+}
+
+void NetQuery::set_error(Status status, string source) {
+  if (status.code() == Error::Resend || status.code() == Error::Cancelled ||
+      status.code() == Error::ResendInvokeAfter) {
+    return set_error_impl(Status::Error(200, PSLICE() << status), std::move(source));
+  }
+
+  if (begins_with(status.message(), "INPUT_METHOD_INVALID")) {
+    LOG(ERROR) << "Receive INPUT_METHOD_INVALID for query " << format::as_hex_dump<4>(Slice(query_.as_slice()));
+  }
+  if (status.message() == "BOT_METHOD_INVALID") {
+    LOG(ERROR) << "Receive BOT_METHOD_INVALID for query " << format::as_hex(tl_constructor());
+  }
+  if (status.message() == "MSG_WAIT_FAILED" && status.code() != 400) {
+    status = Status::Error(400, "MSG_WAIT_FAILED");
+  }
+  set_error_impl(std::move(status), std::move(source));
 }
 
 void dump_pending_network_queries() {

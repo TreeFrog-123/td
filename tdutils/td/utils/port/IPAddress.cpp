@@ -12,8 +12,11 @@
 #include "td/utils/port/SocketFd.h"
 #include "td/utils/port/thread_local.h"
 #include "td/utils/ScopeGuard.h"
+#include "td/utils/utf8.h"
 
-#if !TD_WINDOWS
+#if TD_WINDOWS
+#include "td/utils/port/wstring_convert.h"
+#else
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -25,6 +28,148 @@
 
 namespace td {
 
+static bool is_ascii_host_char(char c) {
+  return static_cast<unsigned char>(c) <= 127;
+}
+
+static bool is_ascii_host(Slice host) {
+  for (auto c : host) {
+    if (!is_ascii_host_char(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+#if !TD_WINDOWS
+static void punycode(string &result, Slice part) {
+  vector<uint32> codes;
+  codes.reserve(utf8_length(part));
+  uint32 processed = 0;
+  auto begin = part.ubegin();
+  auto end = part.uend();
+  while (begin != end) {
+    uint32 code;
+    begin = next_utf8_unsafe(begin, &code);
+    if (code <= 127u) {
+      result += to_lower(static_cast<char>(code));
+      processed++;
+    }
+    codes.push_back(code);
+  }
+
+  if (processed > 0) {
+    result += '-';
+  }
+
+  uint32 n = 127;
+  uint32 delta = 0;
+  int bias = -72;
+  bool is_first = true;
+  while (processed < codes.size()) {
+    // choose lowest not processed code
+    uint32 next_n = 0x110000;
+    for (auto code : codes) {
+      if (code > n && code < next_n) {
+        next_n = code;
+      }
+    }
+    delta += (next_n - n - 1) * (processed + 1);
+
+    for (auto code : codes) {
+      if (code < next_n) {
+        delta++;
+      }
+
+      if (code == next_n) {
+        // found next symbol, encode delta
+        int left = static_cast<int>(delta);
+        while (true) {
+          bias += 36;
+          auto t = clamp(bias, 1, 26);
+          if (left < t) {
+            result += static_cast<char>(left + 'a');
+            break;
+          }
+
+          left -= t;
+          auto digit = t + left % (36 - t);
+          result += static_cast<char>(digit < 26 ? digit + 'a' : digit - 26 + '0');
+          left /= 36 - t;
+        }
+        processed++;
+
+        // update bias
+        if (is_first) {
+          delta /= 700;
+          is_first = false;
+        } else {
+          delta /= 2;
+        }
+        delta += delta / processed;
+
+        bias = 0;
+        while (delta > 35 * 13) {
+          delta /= 35;
+          bias -= 36;
+        }
+        bias -= static_cast<int>(36 * delta / (delta + 38));
+        delta = 0;
+      }
+    }
+
+    delta++;
+    n = next_n;
+  }
+}
+#endif
+
+Result<string> idn_to_ascii(CSlice host) {
+  if (is_ascii_host(host)) {
+    return to_lower(host);
+  }
+  if (!check_utf8(host)) {
+    return Status::Error("Host name must be encoded in UTF-8");
+  }
+
+  const int MAX_DNS_NAME_LENGTH = 255;
+  if (host.size() >= MAX_DNS_NAME_LENGTH * 4) {  // upper bound, 4 characters per symbol
+    return Status::Error("Host name is too long");
+  }
+
+#if TD_WINDOWS
+  TRY_RESULT(whost, to_wstring(host));
+  wchar_t punycode[MAX_DNS_NAME_LENGTH + 1];
+  int result_length =
+      IdnToAscii(IDN_ALLOW_UNASSIGNED, whost.c_str(), narrow_cast<int>(whost.size()), punycode, MAX_DNS_NAME_LENGTH);
+  if (result_length == 0) {
+    return Status::Error("Host can't be converted to ASCII");
+  }
+
+  TRY_RESULT(idn_host, from_wstring(punycode, result_length));
+  return idn_host;
+#else
+  auto parts = full_split(Slice(host), '.');
+  bool is_first = true;
+  string result;
+  for (auto part : parts) {
+    if (!is_first) {
+      result += '.';
+    }
+    if (is_ascii_host(part)) {
+      result.append(part.data(), part.size());
+    } else {
+      // TODO nameprep should be applied first, but punycode is better than nothing.
+      // It is better to use libidn/ICU here if available
+      result += "xn--";
+      punycode(result, part);
+    }
+    is_first = false;
+  }
+  return result;
+#endif
+}
+
 IPAddress::IPAddress() : is_valid_(false) {
 }
 
@@ -33,6 +178,7 @@ bool IPAddress::is_valid() const {
 }
 
 const sockaddr *IPAddress::get_sockaddr() const {
+  CHECK(is_valid());
   return &sockaddr_;
 }
 
@@ -54,7 +200,11 @@ int IPAddress::get_address_family() const {
 }
 
 bool IPAddress::is_ipv4() const {
-  return get_address_family() == AF_INET;
+  return is_valid() && get_address_family() == AF_INET;
+}
+
+bool IPAddress::is_ipv6() const {
+  return is_valid() && get_address_family() == AF_INET6;
 }
 
 uint32 IPAddress::get_ipv4() const {
@@ -84,12 +234,14 @@ IPAddress IPAddress::get_any_addr() const {
   }
   return res;
 }
+
 void IPAddress::init_ipv4_any() {
   is_valid_ = true;
   ipv4_addr_.sin_family = AF_INET;
   ipv4_addr_.sin_addr.s_addr = INADDR_ANY;
   ipv4_addr_.sin_port = 0;
 }
+
 void IPAddress::init_ipv6_any() {
   is_valid_ = true;
   ipv6_addr_.sin6_family = AF_INET6;
@@ -137,36 +289,62 @@ Status IPAddress::init_ipv4_port(CSlice ipv4, int port) {
   return Status::OK();
 }
 
-Status IPAddress::init_host_port(CSlice host, int port) {
+Status IPAddress::init_host_port(CSlice host, int port, bool prefer_ipv6) {
   auto str_port = to_string(port);
-  return init_host_port(host, str_port);
+  return init_host_port(host, str_port, prefer_ipv6);
 }
 
-Status IPAddress::init_host_port(CSlice host, CSlice port) {
+Status IPAddress::init_host_port(CSlice host, CSlice port, bool prefer_ipv6) {
+  if (host.empty()) {
+    return Status::Error("Host is empty");
+  }
+#if TD_WINDOWS
+  if (host == "..localmachine") {
+    return Status::Error("Host is invalid");
+  }
+#endif
+  TRY_RESULT(ascii_host, idn_to_ascii(host));
+  host = ascii_host;
+
   addrinfo hints;
   addrinfo *info = nullptr;
   std::memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;  // TODO AF_UNSPEC;
+  hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
   LOG(INFO) << "Try to init IP address of " << host << " with port " << port;
-  auto s = getaddrinfo(host.c_str(), port.c_str(), &hints, &info);
-  if (s != 0) {
-    return Status::Error(PSLICE() << "getaddrinfo: " << gai_strerror(s));
+  auto err = getaddrinfo(host.c_str(), port.c_str(), &hints, &info);
+  if (err != 0) {
+#if TD_WINDOWS
+    return OS_SOCKET_ERROR("Failed to resolve host");
+#else
+    return Status::Error(PSLICE() << "Failed to resolve host: " << gai_strerror(err));
+#endif
   }
   SCOPE_EXIT {
     freeaddrinfo(info);
   };
 
-  // prefer ipv4
-  addrinfo *best_info = info;
-  for (auto *ptr = info->ai_next; ptr != nullptr; ptr = ptr->ai_next) {
-    if (ptr->ai_socktype == AF_INET) {
+  addrinfo *best_info = nullptr;
+  for (auto *ptr = info; ptr != nullptr; ptr = ptr->ai_next) {
+    if (ptr->ai_family == AF_INET && (!prefer_ipv6 || best_info == nullptr)) {
+      // just use first IPv4 address if there is no IPv6 and it isn't preferred
       best_info = ptr;
-      break;
+      if (!prefer_ipv6) {
+        break;
+      }
+    }
+    if (ptr->ai_family == AF_INET6 && (prefer_ipv6 || best_info == nullptr)) {
+      // or first IPv6 address if there is no IPv4 and it isn't preferred
+      best_info = ptr;
+      if (prefer_ipv6) {
+        break;
+      }
     }
   }
-  // just use first address
-  CHECK(best_info != nullptr);
+  if (best_info == nullptr) {
+    return Status::Error("Failed to find IPv4/IPv6 address");
+  }
   return init_sockaddr(best_info->ai_addr, narrow_cast<socklen_t>(best_info->ai_addrlen));
 }
 
@@ -182,16 +360,15 @@ Status IPAddress::init_sockaddr(sockaddr *addr, socklen_t len) {
   if (addr->sa_family == AF_INET6) {
     CHECK(len == sizeof(ipv6_addr_));
     std::memcpy(&ipv6_addr_, reinterpret_cast<sockaddr_in6 *>(addr), sizeof(ipv6_addr_));
-    LOG(INFO) << "Have ipv6 address " << get_ip_str() << " with port " << get_port();
   } else if (addr->sa_family == AF_INET) {
     CHECK(len == sizeof(ipv4_addr_));
     std::memcpy(&ipv4_addr_, reinterpret_cast<sockaddr_in *>(addr), sizeof(ipv4_addr_));
-    LOG(INFO) << "Have ipv4 address " << get_ip_str() << " with port " << get_port();
   } else {
     return Status::Error(PSLICE() << "Unknown " << tag("sa_family", addr->sa_family));
   }
 
   is_valid_ = true;
+  LOG(INFO) << "Have address " << get_ip_str() << " with port " << get_port();
   return Status::OK();
 }
 
@@ -228,7 +405,7 @@ Status IPAddress::init_peer_address(const SocketFd &socket_fd) {
 }
 
 static CSlice get_ip_str(int family, const void *addr) {
-  const int buf_size = INET6_ADDRSTRLEN;  //, INET_ADDRSTRLEN;
+  const int buf_size = INET6_ADDRSTRLEN;
   static TD_THREAD_LOCAL char *buf;
   init_thread_local<char[]>(buf, buf_size);
 
@@ -256,19 +433,15 @@ Slice IPAddress::get_ip_str() const {
     return Slice("0.0.0.0");
   }
 
-  const void *addr;
   switch (get_address_family()) {
     case AF_INET6:
-      addr = &ipv6_addr_.sin6_addr;
-      break;
+      return ::td::get_ip_str(AF_INET6, &ipv6_addr_.sin6_addr);
     case AF_INET:
-      addr = &ipv4_addr_.sin_addr;
-      break;
+      return ::td::get_ip_str(AF_INET, &ipv4_addr_.sin_addr);
     default:
       UNREACHABLE();
       return Slice();
   }
-  return ::td::get_ip_str(get_address_family(), addr);
 }
 
 int IPAddress::get_port() const {
@@ -304,7 +477,7 @@ void IPAddress::set_port(int port) {
 
 bool operator==(const IPAddress &a, const IPAddress &b) {
   if (!a.is_valid() || !b.is_valid()) {
-    return false;
+    return !a.is_valid() && !b.is_valid();
   }
   if (a.get_address_family() != b.get_address_family()) {
     return false;
@@ -323,8 +496,8 @@ bool operator==(const IPAddress &a, const IPAddress &b) {
 }
 
 bool operator<(const IPAddress &a, const IPAddress &b) {
-  if (a.is_valid() != b.is_valid()) {
-    return a.is_valid() < b.is_valid();
+  if (!a.is_valid() || !b.is_valid()) {
+    return !a.is_valid() && b.is_valid();
   }
   if (a.get_address_family() != b.get_address_family()) {
     return a.get_address_family() < b.get_address_family();

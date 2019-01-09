@@ -8,8 +8,11 @@
 
 #include "td/telegram/Global.h"
 #include "td/telegram/net/ConnectionCreator.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
 #include "td/telegram/net/Session.h"
+
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/logging.h"
 #include "td/utils/Slice.h"
@@ -17,6 +20,7 @@
 #include <functional>
 
 namespace td {
+
 namespace mtproto {
 class RawConnection;
 }  // namespace mtproto
@@ -44,6 +48,10 @@ class SessionCallback : public Session::Callback {
 
   void on_tmp_auth_key_updated(mtproto::AuthKey auth_key) override {
     send_closure(parent_, &SessionProxy::on_tmp_auth_key_updated, std::move(auth_key));
+  }
+
+  void on_server_salt_updated(std::vector<mtproto::ServerSalt> server_salts) override {
+    send_closure(parent_, &SessionProxy::on_server_salt_updated, std::move(server_salts));
   }
 
  private:
@@ -127,6 +135,11 @@ void SessionProxy::on_failed() {
   open_session();
 }
 
+void SessionProxy::update_mtproto_header() {
+  close_session();
+  open_session();
+}
+
 void SessionProxy::on_closed() {
 }
 
@@ -139,14 +152,21 @@ void SessionProxy::open_session(bool force) {
     return;
   }
   CHECK(session_.empty());
+  auto dc_id = auth_data_->dc_id();
   string name = PSTRING() << "Session" << get_name().substr(Slice("SessionProxy").size());
-  string hash_string = PSTRING() << name << " " << auth_data_->dc_id().get_raw_id() << " " << allow_media_only_;
+  string hash_string = PSTRING() << name << " " << dc_id.get_raw_id() << " " << allow_media_only_;
   auto hash = std::hash<std::string>()(hash_string);
-  session_ =
-      create_actor<Session>(name,
-                            make_unique<SessionCallback>(actor_shared(this, session_generation_), auth_data_->dc_id(),
-                                                         allow_media_only_, is_media_, hash),
-                            auth_data_, is_main_, use_pfs_, is_cdn_, tmp_auth_key_);
+  int32 int_dc_id = dc_id.get_raw_id();
+  if (G()->is_test_dc()) {
+    int_dc_id += 10000;
+  }
+  if (allow_media_only_ && !is_cdn_) {
+    int_dc_id = -int_dc_id;
+  }
+  session_ = create_actor<Session>(
+      name,
+      make_unique<SessionCallback>(actor_shared(this, session_generation_), dc_id, allow_media_only_, is_media_, hash),
+      auth_data_, int_dc_id, is_main_, use_pfs_, is_cdn_, tmp_auth_key_, server_salts_);
 }
 
 void SessionProxy::update_auth_state() {
@@ -179,4 +199,8 @@ void SessionProxy::on_tmp_auth_key_updated(mtproto::AuthKey auth_key) {
   LOG(WARNING) << "tmp_auth_key " << auth_key.id() << ": " << state;
   tmp_auth_key_ = std::move(auth_key);
 }
+void SessionProxy::on_server_salt_updated(std::vector<mtproto::ServerSalt> server_salts) {
+  server_salts_ = std::move(server_salts);
+}
+
 }  // namespace td

@@ -12,8 +12,10 @@
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 
+#include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 #include "td/actor/Timeout.h"
+
 #include "td/utils/common.h"
 
 #include <map>
@@ -112,7 +114,7 @@ class UpdatesManager : public Actor {
 
   class State {
    public:
-    enum class Type {
+    enum class Type : int32 {
       General,
       RunningGetUpdatesState,
       RunningGetDifference,
@@ -227,6 +229,7 @@ class UpdatesManager : public Actor {
 
   void on_update(tl_object_ptr<telegram_api::updateDialogPinned> update, bool /*force_apply*/);
   void on_update(tl_object_ptr<telegram_api::updatePinnedDialogs> update, bool /*force_apply*/);
+  void on_update(tl_object_ptr<telegram_api::updateDialogUnreadMark> update, bool /*force_apply*/);
 
   void on_update(tl_object_ptr<telegram_api::updateBotInlineQuery> update, bool /*force_apply*/);
   void on_update(tl_object_ptr<telegram_api::updateBotInlineSend> update, bool /*force_apply*/);
@@ -264,10 +267,10 @@ class UpdatesManager : public Actor {
 
   void on_update(tl_object_ptr<telegram_api::updateContactsReset> update, bool /*force_apply*/);
 
-  // unsupported updates
-
   void on_update(tl_object_ptr<telegram_api::updateLangPackTooLong> update, bool /*force_apply*/);
   void on_update(tl_object_ptr<telegram_api::updateLangPack> update, bool /*force_apply*/);
+
+  // unsupported updates
 };
 
 }  // namespace td

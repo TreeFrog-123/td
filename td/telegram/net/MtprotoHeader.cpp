@@ -6,11 +6,14 @@
 //
 #include "td/telegram/net/MtprotoHeader.h"
 
+#include "td/telegram/LanguagePackManager.h"
+
 #include "td/utils/tl_helpers.h"
 
 namespace td {
 
 namespace {
+
 class HeaderStorer {
  public:
   HeaderStorer(const MtprotoHeader::Options &options, bool is_anonymous)
@@ -18,15 +21,24 @@ class HeaderStorer {
   }
   template <class StorerT>
   void store(StorerT &storer) const {
-    constexpr int32 LAYER = 76;
+    constexpr int32 LAYER = 85;
 
     using td::store;
     // invokeWithLayer#da9b0d0d {X:Type} layer:int query:!X = X;
     store(static_cast<int32>(0xda9b0d0d), storer);
     store(LAYER, storer);
-    // initConnection#c7481da6 {X:Type} api_id:int device_model:string system_version:string app_version:string
-    // system_lang_code:string lang_pack:string lang_code:string query:!X = X;
-    store(static_cast<int32>(0xc7481da6), storer);
+    // initConnection#785188b8 {X:Type} flags:# api_id:int device_model:string system_version:string app_version:string
+    // system_lang_code:string lang_pack:string lang_code:string proxy:flags.0?InputClientProxy query:!X = X;
+    store(static_cast<int32>(0x785188b8), storer);
+    int32 flags = 0;
+    bool have_proxy = !is_anonymous && options.proxy.type() == Proxy::Type::Mtproto;
+    if (have_proxy) {
+      flags |= 1 << 0;
+    }
+    if (options.is_emulator) {
+      flags |= 1 << 10;
+    }
+    store(flags, storer);
     store(options.api_id, storer);
     if (is_anonymous) {
       store(Slice("n/a"), storer);
@@ -37,14 +49,31 @@ class HeaderStorer {
     }
     store(options.application_version, storer);
     store(options.system_language_code, storer);
-    store(string(), storer);
-    store(string(), storer);
+    if (is_anonymous || options.language_pack.empty() ||
+        LanguagePackManager::is_custom_language_code(options.language_code)) {
+      store(Slice(), storer);
+      store(Slice(), storer);
+    } else {
+      store(options.language_pack, storer);
+      if (options.language_code.empty()) {
+        store(Slice("en"), storer);
+      } else {
+        store(options.language_code, storer);
+      }
+    }
+    if (have_proxy) {
+      // inputClientProxy#75588b3f address:string port:int = InputClientProxy;
+      store(static_cast<int32>(0x75588b3f), storer);
+      store(Slice(options.proxy.server()), storer);
+      store(options.proxy.port(), storer);
+    }
   }
 
  private:
   const MtprotoHeader::Options &options;
   bool is_anonymous;
 };
+
 }  // namespace
 
 string MtprotoHeader::gen_header(const MtprotoHeader::Options &options, bool is_anonymous) {

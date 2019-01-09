@@ -56,11 +56,14 @@ class Session final
     virtual void on_closed() = 0;
     virtual void request_raw_connection(Promise<std::unique_ptr<mtproto::RawConnection>>) = 0;
     virtual void on_tmp_auth_key_updated(mtproto::AuthKey auth_key) = 0;
+    virtual void on_server_salt_updated(std::vector<mtproto::ServerSalt> server_salts) {
+    }
     // one still have to call close after on_closed
   };
 
-  Session(unique_ptr<Callback> callback, std::shared_ptr<AuthDataShared> shared_auth_data, bool is_main, bool use_pfs,
-          bool is_cdn, const mtproto::AuthKey &tmp_auth_key);
+  Session(unique_ptr<Callback> callback, std::shared_ptr<AuthDataShared> shared_auth_data, int32 dc_id, bool is_main,
+          bool use_pfs, bool is_cdn, const mtproto::AuthKey &tmp_auth_key,
+          std::vector<mtproto::ServerSalt> server_salts);
   void send(NetQueryPtr &&query);
   void on_network(bool network_flag, uint32 network_generation);
   void on_online(bool online_flag);
@@ -94,7 +97,8 @@ class Session final
   // Just re-ask answer_id each time we get information about it.
   // Thought mtproto::Connection must ensure delivery of such query
 
-  enum class Mode { Tcp, Http } mode_ = Mode::Tcp;
+  int32 dc_id_;
+  enum class Mode : int8 { Tcp, Http } mode_ = Mode::Tcp;
   bool is_main_;
   bool is_cdn_;
   bool was_on_network_ = false;
@@ -120,13 +124,12 @@ class Session final
   struct ConnectionInfo {
     int8 connection_id;
     Mode mode;
-    enum class State { Empty, Connecting, Ready } state = State::Empty;
-    mtproto::AuthKeyHandshake handshake;
-    mtproto::AuthKeyHandshake tmp_handshake;
+    enum class State : int8 { Empty, Connecting, Ready } state = State::Empty;
+    CancellationToken cancellation_token_;
     unique_ptr<mtproto::SessionConnection> connection;
     bool ask_info;
     double wakeup_at = 0;
-    double created_at_ = 0;
+    double created_at = 0;
   };
 
   ConnectionInfo *current_info_;

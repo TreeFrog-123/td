@@ -12,6 +12,7 @@
 #include "td/utils/misc.h"
 
 namespace td {
+
 ConfigShared::ConfigShared(BinlogPmcPtr config_pmc, unique_ptr<Callback> callback)
     : config_pmc_(config_pmc), callback_(std::move(callback)) {
   for (auto key_value : config_pmc_->get_all()) {
@@ -58,10 +59,10 @@ std::unordered_map<string, string> ConfigShared::get_options() const {
   return config_pmc_->get_all();
 }
 
-bool ConfigShared::get_option_boolean(Slice name) const {
+bool ConfigShared::get_option_boolean(Slice name, bool default_value) const {
   auto value = get_option(name);
   if (value.empty()) {
-    return false;
+    return default_value;
   }
   if (value == "Btrue") {
     return true;
@@ -70,7 +71,7 @@ bool ConfigShared::get_option_boolean(Slice name) const {
     return false;
   }
   LOG(ERROR) << "Found \"" << value << "\" instead of boolean option";
-  return false;
+  return default_value;
 }
 
 int32 ConfigShared::get_option_integer(Slice name, int32 default_value) const {
@@ -83,6 +84,18 @@ int32 ConfigShared::get_option_integer(Slice name, int32 default_value) const {
     return default_value;
   }
   return to_integer<int32>(str_value.substr(1));
+}
+
+string ConfigShared::get_option_string(Slice name, string default_value) const {
+  auto str_value = get_option(name);
+  if (str_value.empty()) {
+    return default_value;
+  }
+  if (str_value[0] != 'S') {
+    LOG(ERROR) << "Found \"" << str_value << "\" instead of string option";
+    return default_value;
+  }
+  return str_value.substr(1);
 }
 
 tl_object_ptr<td_api::OptionValue> ConfigShared::get_option_value(Slice value) const {
@@ -120,7 +133,8 @@ tl_object_ptr<td_api::OptionValue> ConfigShared::get_option_value_object(Slice v
   return make_tl_object<td_api::optionValueString>(value.str());
 }
 
-void ConfigShared::on_option_updated(Slice name) {
-  callback_->on_option_updated(name.str());
+void ConfigShared::on_option_updated(Slice name) const {
+  callback_->on_option_updated(name.str(), get_option(name));
 }
+
 }  // namespace td

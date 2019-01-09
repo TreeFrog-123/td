@@ -8,6 +8,7 @@
 
 #include "td/telegram/Global.h"
 #include "td/telegram/net/AuthDataShared.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/actor/actor.h"
@@ -31,7 +32,7 @@ class DcAuthManager : public NetQueryCallback {
     std::shared_ptr<AuthDataShared> shared_auth_data;
     AuthState auth_state;
 
-    enum class State { Waiting, Export, Import, BeforeOk, Ok };
+    enum class State : int32 { Waiting, Export, Import, BeforeOk, Ok };
     State state = State::Waiting;
     uint64 wait_id;
     int32 export_id;

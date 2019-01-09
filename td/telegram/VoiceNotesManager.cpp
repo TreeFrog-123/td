@@ -10,8 +10,6 @@
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/telegram/DocumentsManager.h"
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/Global.h"
@@ -146,7 +144,7 @@ SecretInputMedia VoiceNotesManager::get_secret_input_media(FileId voice_file_id,
   CHECK(voice_note != nullptr);
   auto file_view = td_->file_manager_->get_file_view(voice_file_id);
   auto &encryption_key = file_view.encryption_key();
-  if (encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {

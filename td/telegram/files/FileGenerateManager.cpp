@@ -7,11 +7,14 @@
 #include "td/telegram/files/FileGenerateManager.h"
 
 #include "td/telegram/td_api.h"
+#include "td/telegram/telegram_api.h"
 
 #include "td/telegram/files/FileId.h"
 #include "td/telegram/files/FileLoaderUtils.h"
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/Global.h"
+#include "td/telegram/net/NetQuery.h"
+#include "td/telegram/net/NetQueryDispatcher.h"
 #include "td/telegram/Td.h"
 
 #include "td/utils/common.h"
@@ -20,6 +23,7 @@
 #include "td/utils/port/path.h"
 #include "td/utils/Slice.h"
 
+#include <cmath>
 #include <utility>
 
 namespace td {
@@ -56,7 +60,7 @@ class FileDownloadGenerateActor : public FileGenerateActor {
   ActorShared<> parent_;
 
   void start_up() override {
-    LOG(INFO) << "DOWNLOAD " << file_id_;
+    LOG(INFO) << "Generate by downloading " << file_id_;
     class Callback : public FileManager::DownloadCallback {
      public:
       explicit Callback(ActorId<FileDownloadGenerateActor> parent) : parent_(std::move(parent)) {
@@ -91,7 +95,7 @@ class FileDownloadGenerateActor : public FileGenerateActor {
         callback->on_ok(location);
       } else {
         LOG(ERROR) << "Expected to have local location";
-        callback->on_error(Status::Error("Unknown"));
+        callback->on_error(Status::Error(500, "Unknown"));
       }
     });
     stop();
@@ -99,6 +103,129 @@ class FileDownloadGenerateActor : public FileGenerateActor {
   void on_download_error(Status error) {
     callback_->on_error(std::move(error));
     stop();
+  }
+};
+
+class MapDownloadGenerateActor : public FileGenerateActor {
+ public:
+  MapDownloadGenerateActor(string conversion, std::unique_ptr<FileGenerateCallback> callback, ActorShared<> parent)
+      : conversion_(std::move(conversion)), callback_(std::move(callback)), parent_(std::move(parent)) {
+  }
+  void file_generate_progress(int32 expected_size, int32 local_prefix_size, Promise<> promise) override {
+    UNREACHABLE();
+  }
+  void file_generate_finish(Status status, Promise<> promise) override {
+    UNREACHABLE();
+  }
+
+ private:
+  string conversion_;
+  std::unique_ptr<FileGenerateCallback> callback_;
+  ActorShared<> parent_;
+  string file_name_;
+
+  class Callback : public NetQueryCallback {
+    ActorId<MapDownloadGenerateActor> parent_;
+
+   public:
+    explicit Callback(ActorId<MapDownloadGenerateActor> parent) : parent_(parent) {
+    }
+
+    void on_result(NetQueryPtr query) override {
+      send_closure(parent_, &MapDownloadGenerateActor::on_result, std::move(query));
+    }
+
+    void hangup_shared() override {
+      send_closure(parent_, &MapDownloadGenerateActor::hangup_shared);
+    }
+  };
+  ActorOwn<NetQueryCallback> net_callback_;
+
+  Result<tl_object_ptr<telegram_api::inputWebFileGeoPointLocation>> parse_conversion() {
+    auto parts = full_split(Slice(conversion_), '#');
+    if (parts.size() != 8 || !parts[0].empty() || parts[1] != "map") {
+      return Status::Error("Wrong conversion");
+    }
+
+    TRY_RESULT(zoom, to_integer_safe<int32>(parts[2]));
+    TRY_RESULT(x, to_integer_safe<int32>(parts[3]));
+    TRY_RESULT(y, to_integer_safe<int32>(parts[4]));
+    TRY_RESULT(width, to_integer_safe<int32>(parts[5]));
+    TRY_RESULT(height, to_integer_safe<int32>(parts[6]));
+    TRY_RESULT(scale, to_integer_safe<int32>(parts[7]));
+
+    if (zoom < 13 || zoom > 20) {
+      return Status::Error("Wrong zoom");
+    }
+    auto size = 256 * (1 << zoom);
+    if (x < 0 || x >= size) {
+      return Status::Error("Wrong x");
+    }
+    if (y < 0 || y >= size) {
+      return Status::Error("Wrong y");
+    }
+    if (width < 16 || height < 16 || width > 1024 || height > 1024) {
+      return Status::Error("Wrong dimensions");
+    }
+    if (scale < 1 || scale > 3) {
+      return Status::Error("Wrong scale");
+    }
+
+    file_name_ = PSTRING() << "map_" << zoom << "_" << x << "_" << y << ".png";
+
+    const double PI = 3.14159265358979323846;
+    double longitude = (x + 0.1) * 360.0 / size - 180;
+    double latitude = 90 - 360 * std::atan(std::exp(((y + 0.1) / size - 0.5) * 2 * PI)) / PI;
+
+    int64 access_hash = G()->get_location_access_hash(latitude, longitude);
+    return make_tl_object<telegram_api::inputWebFileGeoPointLocation>(
+        make_tl_object<telegram_api::inputGeoPoint>(latitude, longitude), access_hash, width, height, zoom, scale);
+  }
+
+  void start_up() override {
+    auto r_input_web_file = parse_conversion();
+    if (r_input_web_file.is_error()) {
+      LOG(ERROR) << "Can't parse " << conversion_ << ": " << r_input_web_file.error();
+      return on_error(r_input_web_file.move_as_error());
+    }
+
+    net_callback_ = create_actor<Callback>("MapDownloadGenerateCallback", actor_id(this));
+
+    LOG(INFO) << "Download " << conversion_;
+    auto query = G()->net_query_creator().create(
+        create_storer(telegram_api::upload_getWebFile(r_input_web_file.move_as_ok(), 0, 1 << 20)),
+        G()->get_webfile_dc_id(), NetQuery::Type::DownloadSmall);
+    G()->net_query_dispatcher().dispatch_with_callback(std::move(query), {net_callback_.get(), 0});
+  }
+
+  void on_result(NetQueryPtr query) {
+    auto r_result = process_result(std::move(query));
+    if (r_result.is_error()) {
+      return on_error(r_result.move_as_error());
+    }
+
+    callback_->on_ok(r_result.ok());
+    stop();
+  }
+
+  Result<FullLocalFileLocation> process_result(NetQueryPtr query) {
+    TRY_RESULT(web_file, fetch_result<telegram_api::upload_getWebFile>(std::move(query)));
+
+    if (static_cast<size_t>(web_file->size_) != web_file->bytes_.size()) {
+      LOG(ERROR) << "Failed to download map of size " << web_file->size_;
+      return Status::Error("File is too big");
+    }
+
+    return save_file_bytes(FileType::Thumbnail, std::move(web_file->bytes_), file_name_);
+  }
+
+  void on_error(Status error) {
+    callback_->on_error(std::move(error));
+    stop();
+  }
+
+  void hangup_shared() override {
+    on_error(Status::Error(1, "Cancelled"));
   }
 };
 
@@ -119,7 +246,12 @@ class FileExternalGenerateActor : public FileGenerateActor {
     check_status(do_file_generate_progress(expected_size, local_prefix_size), std::move(promise));
   }
   void file_generate_finish(Status status, Promise<> promise) override {
-    check_status(do_file_generate_finish(std::move(status)), std::move(promise));
+    if (status.is_error()) {
+      check_status(std::move(status));
+      return promise.set_value(Unit());
+    }
+
+    check_status(do_file_generate_finish(), std::move(promise));
   }
 
  private:
@@ -170,9 +302,7 @@ class FileExternalGenerateActor : public FileGenerateActor {
     return Status::OK();
   }
 
-  Status do_file_generate_finish(Status status) {
-    TRY_STATUS(std::move(status));
-
+  Status do_file_generate_finish() {
     auto dir = get_files_dir(generate_location_.file_type_);
 
     TRY_RESULT(perm_path, create_from_temp(path_, dir, name_));
@@ -222,10 +352,13 @@ void FileGenerateManager::generate_file(uint64 query_id, const FullGenerateFileL
   Slice conversion = generate_location.conversion_;
 
   auto &query = it_flag.first->second;
-  if (conversion.copy().truncate(file_id_query.size()) == file_id_query) {
+  if (begins_with(conversion, file_id_query)) {
     auto file_id = FileId(to_integer<int32>(conversion.substr(file_id_query.size())), 0);
     query.worker_ = create_actor<FileDownloadGenerateActor>("FileDownloadGenerateActor", generate_location.file_type_,
                                                             file_id, std::move(callback), std::move(parent));
+  } else if (begins_with(conversion, "#map#") && generate_location.original_path_.empty()) {
+    query.worker_ = create_actor<MapDownloadGenerateActor>(
+        "MapDownloadGenerateActor", std::move(generate_location.conversion_), std::move(callback), std::move(parent));
   } else {
     query.worker_ = create_actor<FileExternalGenerateActor>("FileExternalGenerationActor", query_id, generate_location,
                                                             local_location, std::move(name), std::move(callback),

@@ -26,6 +26,7 @@
 #include <memory>
 
 namespace td {
+
 struct CallProtocol {
   bool udp_p2p{true};
   bool udp_reflector{true};
@@ -51,7 +52,7 @@ struct CallConnection {
 };
 
 struct CallState {
-  enum class Type { Empty, Pending, ExchangingKey, Ready, HangingUp, Discarded, Error } type{Type::Empty};
+  enum class Type : int32 { Empty, Pending, ExchangingKey, Ready, HangingUp, Discarded, Error } type{Type::Empty};
 
   CallProtocol protocol;
   std::vector<CallConnection> connections;
@@ -97,7 +98,7 @@ class CallActor : public NetQueryCallback {
   int32 duration_{0};
   int64 connection_id_{0};
 
-  enum class State {
+  enum class State : int32 {
     Empty,
     SendRequestQuery,
     WaitRequestResult,
@@ -124,6 +125,8 @@ class CallActor : public NetQueryCallback {
   CallState call_state_;
   bool call_state_need_flush_{false};
   bool call_state_has_config_{false};
+
+  NetQueryRef request_query_ref_;
 
   tl_object_ptr<telegram_api::inputPhoneCall> get_input_phone_call();
   bool load_dh_config();
@@ -152,6 +155,10 @@ class CallActor : public NetQueryCallback {
   void try_send_discard_query();
   void on_discard_query_result(NetQueryPtr net_query);
 
+  void on_begin_exchanging_key();
+
+  void on_call_discarded(CallDiscardReason reason, bool need_rating, bool need_debug);
+
   void on_set_rating_query_result(NetQueryPtr net_query);
   void on_set_debug_query_result(NetQueryPtr net_query);
 
@@ -169,7 +176,9 @@ class CallActor : public NetQueryCallback {
   void send_with_promise(NetQueryPtr query, Promise<NetQueryPtr> promise);
 
   void timeout_expired() override;
+  void hangup() override;
 
   void on_error(Status status);
 };
+
 }  // namespace td

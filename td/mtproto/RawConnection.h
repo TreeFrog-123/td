@@ -5,6 +5,7 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
+
 #include "td/mtproto/IStreamTransport.h"
 
 #include "td/utils/buffer.h"
@@ -121,6 +122,9 @@ class RawConnection {
 
   Status flush_read(const AuthKey &auth_key, Callback &callback);
   Status flush_write();
+
+  Status on_quick_ack(uint32 quick_ack, Callback &callback);
+  Status on_read_mtproto_error(int32 error_code);
 
   Status do_flush(const AuthKey &auth_key, Callback &callback) TD_WARN_UNUSED_RESULT {
     if (has_error_) {

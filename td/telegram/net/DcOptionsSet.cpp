@@ -43,9 +43,15 @@ DcOptions DcOptionsSet::get_dc_options() const {
   return result;
 }
 
-Result<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_connection(DcId dc_id, bool allow_media_only, bool use_static) {
+vector<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_all_connections(DcId dc_id, bool allow_media_only,
+                                                                        bool use_static, bool prefer_ipv6,
+                                                                        bool only_http) {
   std::vector<ConnectionInfo> options;
   std::vector<ConnectionInfo> static_options;
+
+  if (prefer_ipv6) {
+    use_static = false;
+  }
 
   for (auto &option_info : options_) {
     auto &option = option_info->option;
@@ -67,39 +73,66 @@ Result<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_connection(DcId dc_id, b
 
     OptionStat *option_stat = get_option_stat(option_info.get());
 
-    info.use_http = false;
-    info.stat = &option_stat->tcp_stat;
-    if (option.is_static()) {
-      static_options.push_back(info);
-    } else {
-      options.push_back(info);
+    if (!only_http) {
+      info.use_http = false;
+      info.stat = &option_stat->tcp_stat;
+      if (option.is_static()) {
+        static_options.push_back(info);
+      } else {
+        options.push_back(info);
+      }
     }
 
-    if (!option.is_obfuscated_tcp_only() && !option.is_static() && false) {  // TODO fix HTTP-mode and enable it
-      info.use_http = true;
-      info.stat = &option_stat->http_stat;
-      options.push_back(info);
+    if (only_http) {
+      if (!option.is_obfuscated_tcp_only() && !option.is_static() && (prefer_ipv6 || !option.is_ipv6())) {
+        info.use_http = true;
+        info.stat = &option_stat->http_stat;
+        options.push_back(info);
+      }
     }
   }
 
   if (use_static) {
     if (!static_options.empty()) {
       options = std::move(static_options);
+    } else {
+      bool have_ipv4 = std::any_of(options.begin(), options.end(), [](auto &v) { return !v.option->is_ipv6(); });
+      if (have_ipv4) {
+        options.erase(std::remove_if(options.begin(), options.end(), [](auto &v) { return v.option->is_ipv6(); }),
+                      options.end());
+      }
     }
   } else {
     if (options.empty()) {
       options = std::move(static_options);
     }
   }
+
+  if (prefer_ipv6) {
+    bool have_ipv6 = std::any_of(options.begin(), options.end(), [](auto &v) { return v.option->is_ipv6(); });
+    if (have_ipv6) {
+      options.erase(std::remove_if(options.begin(), options.end(), [](auto &v) { return !v.option->is_ipv6(); }),
+                    options.end());
+    }
+  }
+
   bool have_media_only = std::any_of(options.begin(), options.end(), [](auto &v) { return v.option->is_media_only(); });
   if (have_media_only) {
     options.erase(std::remove_if(options.begin(), options.end(), [](auto &v) { return !v.option->is_media_only(); }),
                   options.end());
   }
 
+  return options;
+}
+
+Result<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_connection(DcId dc_id, bool allow_media_only, bool use_static,
+                                                                   bool prefer_ipv6, bool only_http) {
+  auto options = find_all_connections(dc_id, allow_media_only, use_static, prefer_ipv6, only_http);
+
   if (options.empty()) {
     return Status::Error(PSLICE() << "No such connection: " << tag("dc_id", dc_id)
-                                  << tag("allow_media_only", allow_media_only) << tag("use_static", use_static));
+                                  << tag("allow_media_only", allow_media_only) << tag("use_static", use_static)
+                                  << tag("prefer_ipv6", prefer_ipv6));
   }
 
   auto last_error_at = std::min_element(options.begin(), options.end(),
@@ -116,12 +149,12 @@ Result<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_connection(DcId dc_id, b
     if (a_state != b_state) {
       return a_state < b_state;
     }
-    if (a_state == Stat::Ok) {
+    if (a_state == Stat::State::Ok) {
       if (a_option.order == b_option.order) {
         return a_option.use_http < b_option.use_http;
       }
       return a_option.order < b_option.order;
-    } else if (a_state == Stat::Error) {
+    } else if (a_state == Stat::State::Error) {
       return a.error_at < b.error_at;
     }
     return a_option.order < b_option.order;
@@ -131,6 +164,7 @@ Result<DcOptionsSet::ConnectionInfo> DcOptionsSet::find_connection(DcId dc_id, b
 }
 
 void DcOptionsSet::reset() {
+  options_.clear();
   ordered_options_.clear();
 }
 

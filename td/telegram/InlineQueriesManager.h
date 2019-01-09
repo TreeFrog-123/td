@@ -11,6 +11,7 @@
 
 #include "td/actor/actor.h"
 #include "td/actor/MultiPromise.h"
+#include "td/actor/PromiseFuture.h"
 #include "td/actor/Timeout.h"
 
 #include "td/telegram/DialogId.h"
@@ -144,7 +145,7 @@ class InlineQueriesManager : public Actor {
     int32 pending_request_count;
   };
 
-  MultiTimeout drop_inline_query_result_timeout_;
+  MultiTimeout drop_inline_query_result_timeout_{"DropInlineQueryResultTimeout"};
   std::unordered_map<uint64, InlineQueryResult> inline_query_results_;  // query_hash -> result
 
   struct InlineMessageContent {

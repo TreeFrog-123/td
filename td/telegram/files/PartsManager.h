@@ -42,6 +42,7 @@ class PartsManager {
   int64 get_ready_size() const;
   size_t get_part_size() const;
   int32 get_part_count() const;
+  int32 get_unchecked_ready_prefix_count();
   int32 get_ready_prefix_count();
 
  private:
@@ -49,7 +50,7 @@ class PartsManager {
   static constexpr int MAX_PART_SIZE = 512 * (1 << 10);
   static constexpr int64 MAX_FILE_SIZE = MAX_PART_SIZE * MAX_PART_COUNT;
 
-  enum class PartStatus { Empty, Pending, Ready };
+  enum class PartStatus : int32 { Empty, Pending, Ready };
 
   bool need_check_{false};
   int64 checked_prefix_size_{0};

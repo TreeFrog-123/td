@@ -22,7 +22,7 @@ TDLib (Telegram Database library) is a cross-platform library for building [Tele
 * **Cross-platform**: `TDLib` can be used on Android, iOS, Windows, macOS, Linux, Windows Phone, WebAssembly, watchOS, tvOS, Tizen, Cygwin. It should also work on other *nix systems with or without minimal effort.
 * **Multilanguage**: `TDLib` can be easily used with any programming language that is able to execute C functions. Additionally it already has native Java (using `JNI`) bindings and .NET (using `C++/CLI` and `C++/CX`) bindings.
 * **Easy to use**: `TDLib` takes care of all network implementation details, encryption and local data storage.
-* **High-performance**: in the [Telegram Bot API](https://core.telegram.org/bots/api), each `TDLib` instance handles more than 19000 active bots simultaneously.
+* **High-performance**: in the [Telegram Bot API](https://core.telegram.org/bots/api), each `TDLib` instance handles more than 22000 active bots simultaneously.
 * **Well-documented**: all `TDLib` API methods and public interfaces are fully documented.
 * **Consistent**: `TDLib` guarantees that all updates are delivered in the right order.
 * **Reliable**: `TDLib` remains stable on slow and unreliable Internet connections.
@@ -31,7 +31,11 @@ TDLib (Telegram Database library) is a cross-platform library for building [Tele
 
 <a name="usage"></a>
 ## Examples and documentation
-Take a look at our [examples](https://github.com/tdlib/td/tree/master/example) and [documentation](https://core.telegram.org/tdlib/docs/).
+Take a look at our [examples](https://github.com/tdlib/td/tree/master/example).
+See our [Getting Started](https://core.telegram.org/tdlib/getting-started) tutorial for a description of basic TDLib concepts.
+See description of our [JSON](#using-json), [C++](#using-cxx), [Java](#using-java) and [.NET](#using-dotnet) interfaces.
+See the [td_api.tl](https://github.com/tdlib/td/blob/master/td/generate/scheme/td_api.tl) scheme or the automatically generated [HTML documentation](https://core.telegram.org/tdlib/docs/td__api_8h.html)
+for a list of all available `TDLib` [methods](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1_function.html) and [classes](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1_object.html).
 
 <a name="dependencies"></a>
 ## Dependencies
@@ -48,7 +52,7 @@ Take a look at our [examples](https://github.com/tdlib/td/tree/master/example) a
 <a name="building"></a>
 ## Building
 
-Install all `TDLib` dependencies as described in [Installing dependencies](#installing-dependencies).
+Install all `TDLib` [dependencies](#dependencies) as described in [Installing dependencies](#installing-dependencies).
 Then enter directory containing `TDLib` sources and compile them using CMake:
 
 ```
@@ -63,27 +67,30 @@ cmake --build .
 
 <a name="macos"></a>
 #### macOS
-* Install the latest Xcode command line tools.
-* Install other dependencies, for example, using [Homebrew](https://brew.sh):
+* Install the latest Xcode command line tools, for example, via `xcode-select --install`.
+* Install other [dependencies](#dependencies), for example, using [Homebrew](https://brew.sh):
 ```
 brew install gperf cmake openssl
 ```
-* Build `TDLib` with CMake as explained in [building](#building). You may need to manually specify path to the installed OpenSSL to CMake, e.g.,
+* Build `TDLib` with CMake as explained in [building](#building). You will likely need to manually specify path to the installed OpenSSL to CMake, e.g.,
 ```
 cmake -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl/ ..
 ```
 
 <a name="windows"></a>
 #### Windows
+* Download and install Microsoft Visual Studio 2015 or later.
 * Download and install [gperf](https://sourceforge.net/projects/gnuwin32/files/gperf/3.0.1/). Add the path to gperf.exe to the PATH environment variable.
 * Install [vcpkg](https://github.com/Microsoft/vcpkg#quick-start).
 * Run the following commands to install `TDLib` dependencies using vcpkg:
 ```
-C:\src\vcpkg> .\vcpkg.exe install openssl:x64-windows openssl:x86-windows zlib:x64-windows zlib:x86-windows
+cd <path to vcpkg>
+.\vcpkg.exe install openssl:x64-windows openssl:x86-windows zlib:x64-windows zlib:x86-windows
 ```
+* Download and install [CMake](https://cmake.org/download/); choose "Add CMake to the system PATH" option while installing.
 * Build `TDLib` with CMake as explained in [building](#building), but instead of `cmake -DCMAKE_BUILD_TYPE=Release ..` use
 ```
-cmake -DCMAKE_TOOLCHAIN_FILE=C:\src\vcpkg\scripts\buildsystems\vcpkg.cmake ..
+cmake -DCMAKE_TOOLCHAIN_FILE=<path to vcpkg>\scripts\buildsystems\vcpkg.cmake ..
 ```
 
 To build 64-bit `TDLib` using MSVC, you will need to additionally specify parameter `-A x64` to CMake.
@@ -91,7 +98,7 @@ To build `TDLib` in Release mode using MSVC, you will need to additionally speci
 
 <a name="linux"></a>
 #### Linux
-* Install all dependencies using your package manager.
+* Install all [dependencies](#dependencies) using your package manager.
 
 <a name="using-cxx"></a>
 ## Using in CMake C++ projects
@@ -114,7 +121,7 @@ target_link_libraries(YourTarget PRIVATE Td::TdStatic)
 
 Or you could install `TDLib` and then reference it in your CMakeLists.txt like this:
 ```
-find_package(Td 1.2.0 REQUIRED)
+find_package(Td 1.3.0 REQUIRED)
 target_link_libraries(YourTarget PRIVATE Td::TdStatic)
 ```
 See [example/cpp/CMakeLists.txt](https://github.com/tdlib/td/tree/master/example/cpp/CMakeLists.txt).
@@ -143,9 +150,10 @@ git checkout td/telegram/Client.h td/telegram/Log.h td/tl/TlObject.h
 `TDLib` provides efficient native C++, Java, and .NET interfaces.
 But for most use cases we suggest to use the JSON interface, which can be easily used with any programming language that is able to execute C functions.
 See [td_json_client](https://core.telegram.org/tdlib/docs/td__json__client_8h.html) and [td_log](https://core.telegram.org/tdlib/docs/td__log_8h.html) documentation for detailed JSON interface description,
-scheme [td_api.tl](https://github.com/tdlib/td/blob/master/td/generate/scheme/td_api.tl) or autogenerated [HTML documentation](https://core.telegram.org/tdlib/docs/td__api_8h.html) for the list of all available `TDLib` methods and classes.
+the [td_api.tl](https://github.com/tdlib/td/blob/master/td/generate/scheme/td_api.tl) scheme or the automatically generated [HTML documentation](https://core.telegram.org/tdlib/docs/td__api_8h.html) for a list of
+all available `TDLib` [methods](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1_function.html) and [classes](https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1_object.html).
 
-See [example/python/tdjson_example.py](https://github.com/tdlib/td/tree/master/example/python/tdjson_example.py) and [example/ruby/example.rb](https://github.com/tdlib/td/tree/master/example/ruby/example.rb) for an example of such usage.
+See [example/python/tdjson_example.py](https://github.com/tdlib/td/tree/master/example/python/tdjson_example.py) and [example/ruby/example.rb](https://github.com/tdlib/td/tree/master/example/ruby/example.rb) for examples of such usage.
 
 <a name="license"></a>
 ## License

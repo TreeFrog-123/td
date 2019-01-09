@@ -11,7 +11,7 @@
 
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
-#include "td/utils/Slice.h"
+#include "td/utils/misc.h"
 #include "td/utils/Status.h"
 
 #include <utility>
@@ -27,7 +27,8 @@ void RawConnection::send_crypto(const Storer &storer, int64 session_id, int64 sa
   info.salt = salt;
   info.session_id = session_id;
 
-  auto packet = BufferWriter{mtproto::Transport::write(storer, auth_key, &info), transport_->max_prepend_size(), 0};
+  auto packet = BufferWriter{mtproto::Transport::write(storer, auth_key, &info), transport_->max_prepend_size(),
+                             transport_->max_append_size()};
   mtproto::Transport::write(storer, auth_key, &info, packet.as_slice());
 
   bool use_quick_ack = false;
@@ -47,8 +48,8 @@ uint64 RawConnection::send_no_crypto(const Storer &storer) {
   mtproto::PacketInfo info;
 
   info.no_crypto_flag = true;
-  auto packet =
-      BufferWriter{mtproto::Transport::write(storer, mtproto::AuthKey(), &info), transport_->max_prepend_size(), 0};
+  auto packet = BufferWriter{mtproto::Transport::write(storer, mtproto::AuthKey(), &info),
+                             transport_->max_prepend_size(), transport_->max_append_size()};
   mtproto::Transport::write(storer, mtproto::AuthKey(), &info, packet.as_slice());
   LOG(INFO) << "Send handshake packet: " << format::as_hex_dump<4>(packet.as_slice());
   transport_->write(std::move(packet), false);
@@ -64,53 +65,79 @@ Status RawConnection::flush_read(const AuthKey &auth_key, Callback &callback) {
     BufferSlice packet;
     uint32 quick_ack = 0;
     TRY_RESULT(wait_size, transport_->read_next(&packet, &quick_ack));
+    if (!is_aligned_pointer<4>(packet.as_slice().ubegin())) {
+      BufferSlice new_packet(packet.size());
+      new_packet.as_slice().copy_from(packet.as_slice());
+      packet = std::move(new_packet);
+    }
+    CHECK(is_aligned_pointer<4>(packet.as_slice().ubegin()));
     if (wait_size != 0) {
       break;
     }
 
     if (quick_ack != 0) {
-      auto it = quick_ack_to_token_.find(quick_ack);
-      if (it == quick_ack_to_token_.end()) {
-        LOG(WARNING) << Status::Error(PSLICE() << "Unknown " << tag("quick_ack", quick_ack));
-        continue;
-        // TODO: return Status::Error(PSLICE() << "Unknown " << tag("quick_ack", quick_ack));
-      }
-      auto token = it->second;
-      quick_ack_to_token_.erase(it);
-      callback.on_quick_ack(token);
+      on_quick_ack(quick_ack, callback);
       continue;
     }
 
-    MutableSlice data = packet.as_slice();
     PacketInfo info;
     info.version = 2;
 
-    int32 error_code = 0;
-    TRY_STATUS(mtproto::Transport::read(data, auth_key, &info, &data, &error_code));
-
-    if (error_code) {
-      if (error_code == -429) {
-        if (stats_callback_) {
-          stats_callback_->on_mtproto_error();
+    TRY_RESULT(read_result, mtproto::Transport::read(packet.as_slice(), auth_key, &info));
+    switch (read_result.type()) {
+      case mtproto::Transport::ReadResult::Quickack: {
+        TRY_STATUS(on_quick_ack(read_result.quick_ack(), callback));
+        break;
+      }
+      case mtproto::Transport::ReadResult::Error: {
+        TRY_STATUS(on_read_mtproto_error(read_result.error()));
+        break;
+      }
+      case mtproto::Transport::ReadResult::Packet: {
+        // If a packet was successfully decrypted, then it is ok to assume that the connection is alive
+        if (!auth_key.empty()) {
+          if (stats_callback_) {
+            stats_callback_->on_pong();
+          }
         }
-        return Status::Error(500, PSLICE() << "Mtproto error: " << error_code);
-      }
-      if (error_code == -404) {
-        return Status::Error(-404, PSLICE() << "Mtproto error: " << error_code);
-      }
-      return Status::Error(PSLICE() << "Mtproto error: " << error_code);
-    }
 
-    // If a packet was successfully decrypted, then it is ok to assume that the connection is alive
-    if (!auth_key.empty()) {
-      if (stats_callback_) {
-        stats_callback_->on_pong();
+        TRY_STATUS(callback.on_raw_packet(info, packet.from_slice(read_result.packet())));
+        break;
       }
+      case mtproto::Transport::ReadResult::Nop:
+        break;
+      default:
+        UNREACHABLE();
     }
-
-    TRY_STATUS(callback.on_raw_packet(info, packet.from_slice(data)));
   }
+
   TRY_STATUS(std::move(r));
+  return Status::OK();
+}
+
+Status RawConnection::on_read_mtproto_error(int32 error_code) {
+  if (error_code == -429) {
+    if (stats_callback_) {
+      stats_callback_->on_mtproto_error();
+    }
+    return Status::Error(500, PSLICE() << "Mtproto error: " << error_code);
+  }
+  if (error_code == -404) {
+    return Status::Error(-404, PSLICE() << "Mtproto error: " << error_code);
+  }
+  return Status::Error(PSLICE() << "Mtproto error: " << error_code);
+}
+
+Status RawConnection::on_quick_ack(uint32 quick_ack, Callback &callback) {
+  auto it = quick_ack_to_token_.find(quick_ack);
+  if (it == quick_ack_to_token_.end()) {
+    LOG(WARNING) << Status::Error(PSLICE() << "Unknown " << tag("quick_ack", quick_ack));
+    return Status::OK();
+    // TODO: return Status::Error(PSLICE() << "Unknown " << tag("quick_ack", quick_ack));
+  }
+  auto token = it->second;
+  quick_ack_to_token_.erase(it);
+  callback.on_quick_ack(token);
   return Status::OK();
 }
 

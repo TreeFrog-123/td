@@ -10,6 +10,7 @@
 
 #include "td/telegram/files/FileLoaderUtils.h"
 #include "td/telegram/Global.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/UniqueId.h"
 
 #include "td/utils/buffer.h"
@@ -18,6 +19,8 @@
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
+#include "td/utils/port/path.h"
+#include "td/utils/port/Stat.h"
 #include "td/utils/ScopeGuard.h"
 #include "td/utils/Slice.h"
 
@@ -36,7 +39,7 @@ FileDownloader::FileDownloader(const FullRemoteFileLocation &remote, const Local
     , callback_(std::move(callback))
     , is_small_(is_small)
     , search_file_(search_file) {
-  if (!encryption_key.empty()) {
+  if (encryption_key.is_secret()) {
     set_ordered_flag(true);
   }
 }
@@ -48,6 +51,12 @@ Result<FileLoader::FileInfo> FileDownloader::init() {
   if (local_.type() == LocalFileLocation::Type::Full) {
     return Status::Error("File is already downloaded");
   }
+  if (encryption_key_.is_secure() && !encryption_key_.has_value_hash()) {
+    LOG(ERROR) << "Can't download Secure file with unknown value_hash";
+  }
+  if (remote_.file_type_ == FileType::Secure) {
+    size_ = 0;
+  }
   int ready_part_count = 0;
   int32 part_size = 0;
   if (local_.type() == LocalFileLocation::Type::Partial) {
@@ -56,7 +65,7 @@ Result<FileLoader::FileInfo> FileDownloader::init() {
     auto result_fd = FileFd::open(path_, FileFd::Write | FileFd::Read);
     // TODO: check timestamps..
     if (result_fd.is_ok()) {
-      if (!encryption_key_.empty()) {
+      if (encryption_key_.is_secret()) {
         CHECK(partial.iv_.size() == 32) << partial.iv_.size();
         encryption_key_.mutable_iv() = as<UInt256>(partial.iv_.data());
         next_part_ = partial.ready_part_count_;
@@ -104,13 +113,23 @@ Status FileDownloader::on_ok(int64 size) {
   auto dir = get_files_dir(remote_.file_type_);
 
   std::string path;
+  fd_.close();
+  if (encryption_key_.is_secure()) {
+    TRY_RESULT(file_path, open_temp_file(remote_.file_type_));
+    string tmp_path;
+    std::tie(std::ignore, tmp_path) = std::move(file_path);
+    TRY_STATUS(secure_storage::decrypt_file(encryption_key_.secret(), encryption_key_.value_hash(), path_, tmp_path));
+    unlink(path_).ignore();
+    path_ = std::move(tmp_path);
+    TRY_RESULT(path_stat, stat(path_));
+    size = path_stat.size_;
+  }
   if (only_check_) {
     path = path_;
   } else {
     TRY_RESULT(perm_path, create_from_temp(path_, dir, name_));
     path = std::move(perm_path);
   }
-  fd_.close();
   callback_->on_ok(FullLocalFileLocation(remote_.file_type_, std::move(path), 0), size);
   return Status::OK();
 }
@@ -192,7 +211,7 @@ Result<bool> FileDownloader::should_restart_part(Part part, NetQueryPtr &net_que
   return false;
 }
 Result<std::pair<NetQueryPtr, bool>> FileDownloader::start_part(Part part, int32 part_count) {
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     part.size = (part.size + 15) & ~15;  // fix for last part
   }
   // auto size = part.size;
@@ -208,6 +227,7 @@ Result<std::pair<NetQueryPtr, bool>> FileDownloader::start_part(Part part, int32
 
   NetQueryPtr net_query;
   if (!use_cdn_) {
+    DcId dc_id = remote_.is_web() ? G()->get_webfile_dc_id() : remote_.get_dc_id();
     net_query = G()->net_query_creator().create(
         UniqueId::next(UniqueId::Type::Default, static_cast<uint8>(QueryType::Default)),
         remote_.is_web()
@@ -215,7 +235,7 @@ Result<std::pair<NetQueryPtr, bool>> FileDownloader::start_part(Part part, int32
                                                             static_cast<int32>(part.offset), static_cast<int32>(size)))
             : create_storer(telegram_api::upload_getFile(remote_.as_input_file_location(),
                                                          static_cast<int32>(part.offset), static_cast<int32>(size))),
-        remote_.get_dc_id(), is_small_ ? NetQuery::Type::DownloadSmall : NetQuery::Type::Download);
+        dc_id, is_small_ ? NetQuery::Type::DownloadSmall : NetQuery::Type::Download);
   } else {
     if (remote_.is_web()) {
       return Status::Error("Can't download web file from CDN");
@@ -279,10 +299,10 @@ Result<size_t> FileDownloader::process_part(Part part, NetQueryPtr net_query) {
   }
 
   auto padded_size = part.size;
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     padded_size = (part.size + 15) & ~15;
   }
-  LOG(INFO) << "Got " << bytes.size() << " padded_size=" << padded_size;
+  LOG(INFO) << "Got " << bytes.size() << " bytes, padded_size = " << padded_size << " for " << path_;
   if (bytes.size() > padded_size) {
     return Status::Error("Part size is more than requested");
   }
@@ -304,7 +324,7 @@ Result<size_t> FileDownloader::process_part(Part part, NetQueryPtr net_query) {
     ctr_state.init(key, iv);
     ctr_state.decrypt(bytes.as_slice(), bytes.as_slice());
   }
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     CHECK(next_part_ == part.id) << tag("expected part.id", next_part_) << "!=" << tag("part.id", part.id);
     CHECK(!next_part_stop_);
     next_part_++;
@@ -332,10 +352,10 @@ void FileDownloader::on_progress(int32 part_count, int32 part_size, int32 ready_
   if (ready_size == 0 || path_.empty()) {
     return;
   }
-  if (encryption_key_.empty()) {
+  if (encryption_key_.empty() || encryption_key_.is_secure()) {
     callback_->on_partial_download(PartialLocalFileLocation{remote_.file_type_, path_, part_size, ready_part_count, ""},
                                    ready_size);
-  } else {
+  } else if (encryption_key_.is_secret()) {
     UInt256 iv;
     if (ready_part_count == next_part_) {
       iv = encryption_key_.mutable_iv();
@@ -345,6 +365,8 @@ void FileDownloader::on_progress(int32 part_count, int32 part_size, int32 ready_
     callback_->on_partial_download(PartialLocalFileLocation{remote_.file_type_, path_, part_size, ready_part_count,
                                                             Slice(iv.raw, sizeof(iv)).str()},
                                    ready_size);
+  } else {
+    UNREACHABLE();
   }
 }
 
@@ -358,6 +380,7 @@ Status FileDownloader::process_check_query(NetQueryPtr net_query) {
   add_hash_info(file_hashes);
   return Status::OK();
 }
+
 Result<FileLoader::CheckInfo> FileDownloader::check_loop(int64 checked_prefix_size, int64 ready_prefix_size,
                                                          bool is_ready) {
   if (!need_check_) {
@@ -373,7 +396,7 @@ Result<FileLoader::CheckInfo> FileDownloader::check_loop(int64 checked_prefix_si
     search_info.offset = checked_prefix_size;
     auto it = hash_info_.upper_bound(search_info);
     if (it != hash_info_.begin()) {
-      it--;
+      --it;
     }
     if (it != hash_info_.end() && it->offset <= checked_prefix_size &&
         it->offset + narrow_cast<int64>(it->size) > checked_prefix_size) {
@@ -423,6 +446,7 @@ Result<FileLoader::CheckInfo> FileDownloader::check_loop(int64 checked_prefix_si
   info.checked_prefix_size = checked_prefix_size;
   return std::move(info);
 }
+
 void FileDownloader::add_hash_info(const std::vector<telegram_api::object_ptr<telegram_api::fileHash>> &hashes) {
   for (auto &hash : hashes) {
     //LOG(ERROR) << "ADD HASH " << hash->offset_ << "->" << hash->limit_;

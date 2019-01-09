@@ -6,6 +6,7 @@
 //
 #include "data.h"
 
+#include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
 #include "td/telegram/ClientActor.h"
@@ -242,7 +243,7 @@ class DoAuthentication : public Task {
       default:
         CHECK(false) << "Unexpected authorization state " << to_string(authorization_state);
     }
-    send_query(std::move(function), [this](auto res) { CHECK(res->get_id() == td_api::ok::ID) << to_string(res); });
+    send_query(std::move(function), [](auto res) { CHECK(res->get_id() == td_api::ok::ID) << to_string(res); });
   }
   void on_authorization_ready() {
     LOG(INFO) << "GOT AUTHORIZED";
@@ -833,5 +834,6 @@ class Tdclient_login : public td::Test {
   ConcurrentScheduler sched_;
   Status result_;
 };
-Tdclient_login Tdclient_login("Tdclient_login");
-};  // namespace td
+//Tdclient_login Tdclient_login("Tdclient_login");
+
+}  // namespace td

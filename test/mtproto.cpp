@@ -17,8 +17,10 @@
 #include "td/mtproto/RawConnection.h"
 
 #include "td/net/Socks5.h"
+#include "td/net/TransparentProxy.h"
 
 #include "td/telegram/ConfigManager.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/PublicRsaKeyShared.h"
 
 #include "td/utils/logging.h"
@@ -31,55 +33,49 @@ REGISTER_TESTS(mtproto);
 using namespace td;
 using namespace mtproto;
 
-#if !TD_WINDOWS && !TD_EMSCRIPTEN  // TODO
 TEST(Mtproto, config) {
   ConcurrentScheduler sched;
   int threads_n = 0;
   sched.init(threads_n);
 
-  int cnt = 3;
+  int cnt = 1;
   {
     auto guard = sched.get_current_guard();
-    get_simple_config_azure(PromiseCreator::lambda([&](Result<SimpleConfig> r_simple_config) {
-      LOG(ERROR) << to_string(r_simple_config.ok());
-      if (--cnt == 0) {
-        Scheduler::instance()->finish();
-      }
-    }))
-        .release();
 
-    get_simple_config_google_app(PromiseCreator::lambda([&](Result<SimpleConfig> r_simple_config) {
-      LOG(ERROR) << to_string(r_simple_config.ok());
-      if (--cnt == 0) {
-        Scheduler::instance()->finish();
-      }
-    }))
-        .release();
+    auto run = [&](auto &func, bool is_test) {
+      auto promise = PromiseCreator::lambda([&, num = cnt](Result<SimpleConfig> r_simple_config) {
+        if (r_simple_config.is_ok()) {
+          LOG(WARNING) << num << " " << to_string(r_simple_config.ok());
+        } else {
+          LOG(ERROR) << num << " " << r_simple_config.error();
+        }
+        if (--cnt == 0) {
+          Scheduler::instance()->finish();
+        }
+      });
+      cnt++;
+      func(std::move(promise), nullptr, is_test, -1).release();
+    };
 
-    get_simple_config_google_dns(PromiseCreator::lambda([&](Result<SimpleConfig> r_simple_config) {
-      LOG(ERROR) << to_string(r_simple_config.ok());
-      if (--cnt == 0) {
-        Scheduler::instance()->finish();
-      }
-    }))
-        .release();
+    run(get_simple_config_azure, false);
+    run(get_simple_config_google_dns, false);
+    run(get_simple_config_azure, true);
+    run(get_simple_config_google_dns, true);
   }
+  cnt--;
   sched.start();
   while (sched.run_main(10)) {
     // empty;
   }
   sched.finish();
 }
-#endif
 
 TEST(Mtproto, encrypted_config) {
   string data =
-      "   LQ2 \b\n\tru6xVXpHHckW4eQWK0X3uThupVOor5sXT8t298IjDksYeUseQTOIrnUqiQj7o"
-      "+ZgPfhnfe+lfcQA+naax9akgllimjlJtL5riTf3O7iqZSnJ614qmCucxqqVTbXk/"
-      "hY2KaJTtsMqk7cShJjM3aQ4DD40h2InTaG7uyVO2q7K0GMUTeY3AM0Rt1lUjKHLD"
-      "g4RwjTzZaG8TwfgL/mZ7jsvgTTTATPWKUo7SmxQ9Hsj+07NMGqr6JKZS6aiU1Knz"
-      "VGCZ3OJEyRYocktN4HjaLpkguilaHWlVM2UNFUd5a+ajfLIiiKlH0FRC3XZ12CND"
-      "Y+NBjv0I57N2O4fBfswTlA==  ";
+      "   hO//tt \b\n\tiwPVovorKtIYtQ8y2ik7CqfJiJ4pJOCLRa4fBmNPixuRPXnBFF/3mTAAZoSyHq4SNylGHz0Cv1/"
+      "FnWWdEV+BPJeOTk+ARHcNkuJBt0CqnfcVCoDOpKqGyq0U31s2MOpQvHgAG+Tlpg02syuH0E4dCGRw5CbJPARiynteb9y5fT5x/"
+      "kmdp6BMR5tWQSQF0liH16zLh8BDSIdiMsikdcwnAvBwdNhRqQBqGx9MTh62MDmlebjtczE9Gz0z5cscUO2yhzGdphgIy6SP+"
+      "bwaqLWYF0XdPGjKLMUEJW+rou6fbL1t/EUXPtU0XmQAnO0Fh86h+AqDMOe30N4qKrPQ==   ";
   auto config = decode_config(data).move_as_ok();
 }
 
@@ -94,8 +90,10 @@ class TestPingActor : public Actor {
   Status *result_;
 
   void start_up() override {
-    ping_connection_ = std::make_unique<mtproto::PingConnection>(std::make_unique<mtproto::RawConnection>(
-        SocketFd::open(ip_address_).move_as_ok(), mtproto::TransportType::Tcp, nullptr));
+    ping_connection_ = std::make_unique<mtproto::PingConnection>(
+        std::make_unique<mtproto::RawConnection>(SocketFd::open(ip_address_).move_as_ok(),
+                                                 mtproto::TransportType{mtproto::TransportType::Tcp, 0, ""}, nullptr),
+        3);
 
     ping_connection_->get_pollable().set_observer(this);
     subscribe(ping_connection_->get_pollable());
@@ -115,7 +113,7 @@ class TestPingActor : public Actor {
       return stop();
     }
     if (ping_connection_->was_pong()) {
-      LOG(ERROR) << "GOT PONG";
+      LOG(INFO) << "GOT PONG";
       return stop();
     }
   }
@@ -128,8 +126,16 @@ class TestPingActor : public Actor {
 
 static IPAddress get_default_ip_address() {
   IPAddress ip_address;
+#if TD_EMSCRIPTEN
+  ip_address.init_host_port("venus.web.telegram.org/apiws", 443).ensure();
+#else
   ip_address.init_ipv4_port("149.154.167.40", 80).ensure();
+#endif
   return ip_address;
+}
+
+static int32 get_default_dc_id() {
+  return 10002;
 }
 
 class Mtproto_ping : public td::Test {
@@ -151,7 +157,6 @@ class Mtproto_ping : public td::Test {
     if (result_.is_error()) {
       LOG(ERROR) << result_;
     }
-    ASSERT_TRUE(result_.is_ok());
     return false;
   }
 
@@ -177,10 +182,11 @@ class Context : public AuthKeyHandshakeContext {
 
 class HandshakeTestActor : public Actor {
  public:
-  explicit HandshakeTestActor(Status *result) : result_(result) {
+  HandshakeTestActor(int32 dc_id, Status *result) : dc_id_(dc_id), result_(result) {
   }
 
  private:
+  int32 dc_id_ = 0;
   Status *result_;
   bool wait_for_raw_connection_ = false;
   std::unique_ptr<RawConnection> raw_connection_;
@@ -197,11 +203,12 @@ class HandshakeTestActor : public Actor {
   }
   void loop() override {
     if (!wait_for_raw_connection_ && !raw_connection_) {
-      raw_connection_ = std::make_unique<mtproto::RawConnection>(SocketFd::open(get_default_ip_address()).move_as_ok(),
-                                                                 mtproto::TransportType::Tcp, nullptr);
+      raw_connection_ =
+          std::make_unique<mtproto::RawConnection>(SocketFd::open(get_default_ip_address()).move_as_ok(),
+                                                   mtproto::TransportType{mtproto::TransportType::Tcp, 0, ""}, nullptr);
     }
     if (!wait_for_handshake_ && !handshake_) {
-      handshake_ = std::make_unique<AuthKeyHandshake>(0);
+      handshake_ = std::make_unique<AuthKeyHandshake>(dc_id_, 0);
     }
     if (raw_connection_ && handshake_) {
       if (wait_for_result_) {
@@ -270,7 +277,7 @@ class Mtproto_handshake : public td::Test {
   bool step() final {
     if (!is_inited_) {
       sched_.init(0);
-      sched_.create_actor_unsafe<HandshakeTestActor>(0, "HandshakeTestActor", &result_).release();
+      sched_.create_actor_unsafe<HandshakeTestActor>(0, "HandshakeTestActor", get_default_dc_id(), &result_).release();
       sched_.start();
       is_inited_ = true;
     }
@@ -283,7 +290,6 @@ class Mtproto_handshake : public td::Test {
     if (result_.is_error()) {
       LOG(ERROR) << result_;
     }
-    ASSERT_TRUE(result_.is_ok());
     return false;
   }
 
@@ -301,7 +307,7 @@ class Socks5TestActor : public Actor {
       send_closure(actor_id, &Socks5TestActor::on_result, std::move(res), false);
     });
 
-    class Callback : public Socks5::Callback {
+    class Callback : public TransparentProxy::Callback {
      public:
       explicit Callback(Promise<SocketFd> promise) : promise_(std::move(promise)) {
       }

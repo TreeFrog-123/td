@@ -11,6 +11,8 @@
 #if TD_HAVE_OPENSSL
 
 #include "td/utils/Slice.h"
+#include "td/utils/Status.h"
+#include "td/utils/StringBuilder.h"
 
 namespace td {
 
@@ -41,7 +43,7 @@ class BigNum {
 
   static BigNum from_binary(Slice str);
 
-  static BigNum from_decimal(CSlice str);
+  static Result<BigNum> from_decimal(CSlice str);
 
   static BigNum from_raw(void *openssl_big_num);
 
@@ -87,6 +89,8 @@ class BigNum {
 
   static void mod_mul(BigNum &r, BigNum &a, BigNum &b, const BigNum &m, BigNumContext &context);
 
+  static void mod_inv(BigNum &r, BigNum &a, const BigNum &m, BigNumContext &context);
+
   static void div(BigNum *quotient, BigNum *remainder, const BigNum &dividend, const BigNum &divisor,
                   BigNumContext &context);
 
@@ -102,6 +106,8 @@ class BigNum {
 
   explicit BigNum(unique_ptr<Impl> &&impl);
 };
+
+StringBuilder &operator<<(StringBuilder &sb, const BigNum &bn);
 
 }  // namespace td
 

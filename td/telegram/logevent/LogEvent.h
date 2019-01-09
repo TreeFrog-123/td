@@ -83,6 +83,13 @@ class LogEvent {
     ToggleDialogIsPinnedOnServer = 0x10c,
     ReorderPinnedDialogsOnServer = 0x10d,
     SaveDialogDraftMessageOnServer = 0x10e,
+    UpdateDialogNotificationSettingsOnServer = 0x10f,
+    UpdateScopeNotificationSettingsOnServer = 0x110,
+    ResetAllNotificationSettingsOnServer = 0x111,
+    ChangeDialogReportSpamStateOnServer = 0x112,
+    GetDialogFromServer = 0x113,
+    ReadHistoryInSecretChat = 0x114,
+    ToggleDialogIsMarkedAsUnreadOnServer = 0x115,
     GetChannelDifference = 0x140,
     ConfigPmcMagic = 0x1f18,
     BinlogPmcMagic = 0x4327
@@ -162,15 +169,14 @@ class StorerImpl : public Storer {
     td::store(event_, storer);
     return storer.get_length();
   }
-  size_t store(uint8 *ptr_x) const override {
-    char *ptr = reinterpret_cast<char *>(ptr_x);
+  size_t store(uint8 *ptr) const override {
     WithContext<TlStorerUnsafe, Global *> storer(ptr);
     storer.set_context(G());
 
     storer.store_int(T::version());
     td::store(magic(event_), storer);
     td::store(event_, storer);
-    return storer.get_buf() - ptr;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 
  private:
@@ -221,7 +227,7 @@ class LogEventStorerCalcLength : public WithContext<TlStorerCalcLength, Global *
 
 class LogEventStorerUnsafe : public WithContext<TlStorerUnsafe, Global *> {
  public:
-  explicit LogEventStorerUnsafe(char *buf) : WithContext<TlStorerUnsafe, Global *>(buf) {
+  explicit LogEventStorerUnsafe(unsigned char *buf) : WithContext<TlStorerUnsafe, Global *>(buf) {
     store_int(static_cast<int32>(Version::Next) - 1);
     set_context(G());
   }
@@ -256,15 +262,14 @@ class LogEventStorerImpl : public Storer {
     td::store(event_, storer);
     return storer.get_length();
   }
-  size_t store(uint8 *ptr_x) const override {
-    char *ptr = reinterpret_cast<char *>(ptr_x);
+  size_t store(uint8 *ptr) const override {
     LogEventStorerUnsafe storer(ptr);
     td::store(event_, storer);
 #ifdef TD_DEBUG
     T check_result;
     log_event_parse(check_result, Slice(ptr, storer.get_buf())).ensure();
 #endif
-    return storer.get_buf() - ptr;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 
  private:
@@ -278,7 +283,7 @@ BufferSlice log_event_store(const T &data) {
 
   BufferSlice value_buffer{storer_calc_length.get_length()};
 
-  LogEventStorerUnsafe storer_unsafe(value_buffer.as_slice().begin());
+  LogEventStorerUnsafe storer_unsafe(value_buffer.as_slice().ubegin());
   store(data, storer_unsafe);
 
 #ifdef TD_DEBUG

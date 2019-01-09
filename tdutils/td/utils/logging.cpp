@@ -33,7 +33,6 @@ int VERBOSITY_NAME(td_requests) = VERBOSITY_NAME(INFO);
 int VERBOSITY_NAME(dc) = VERBOSITY_NAME(DEBUG) + 2;
 int VERBOSITY_NAME(files) = VERBOSITY_NAME(DEBUG) + 2;
 int VERBOSITY_NAME(mtproto) = VERBOSITY_NAME(DEBUG) + 7;
-int VERBOSITY_NAME(connections) = VERBOSITY_NAME(DEBUG) + 8;
 int VERBOSITY_NAME(raw_mtproto) = VERBOSITY_NAME(DEBUG) + 10;
 int VERBOSITY_NAME(fd) = VERBOSITY_NAME(DEBUG) + 9;
 int VERBOSITY_NAME(actor) = VERBOSITY_NAME(DEBUG) + 10;
@@ -57,26 +56,26 @@ Logger::Logger(LogInterface &log, int log_level, Slice file_name, int line_num, 
 
   auto thread_id = get_thread_id();
 
-  (*this) << '[';
+  sb_ << '[';
   if (log_level < 10) {
-    (*this) << ' ';
+    sb_ << ' ';
   }
-  (*this) << log_level << "][t";
+  sb_ << log_level << "][t";
   if (thread_id < 10) {
-    (*this) << ' ';
+    sb_ << ' ';
   }
-  (*this) << thread_id << "][" << StringBuilder::FixedDouble(Clocks::system(), 9) << "][" << file_name << ':'
-          << line_num << ']';
+  sb_ << thread_id << "][" << StringBuilder::FixedDouble(Clocks::system(), 9) << "][" << file_name << ':' << line_num
+      << ']';
   if (tag_ != nullptr && *tag_) {
-    (*this) << "[#" << Slice(tag_) << "]";
+    sb_ << "[#" << Slice(tag_) << ']';
   }
   if (tag2_ != nullptr && *tag2_) {
-    (*this) << "[!" << Slice(tag2_) << "]";
+    sb_ << "[!" << Slice(tag2_) << ']';
   }
   if (!comment.empty()) {
-    (*this) << "[&" << comment << "]";
+    sb_ << "[&" << comment << ']';
   }
-  (*this) << "\t";
+  sb_ << '\t';
 }
 
 Logger::~Logger() {

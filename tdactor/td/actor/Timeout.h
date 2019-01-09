@@ -10,11 +10,13 @@
 
 #include "td/utils/Heap.h"
 #include "td/utils/logging.h"
+#include "td/utils/Slice.h"
 #include "td/utils/Time.h"
 
 #include <set>
 
 namespace td {
+
 class Timeout final : public Actor {
  public:
   using Data = void *;
@@ -82,8 +84,8 @@ class MultiTimeout final : public Actor {
  public:
   using Data = void *;
   using Callback = void (*)(Data, int64);
-  MultiTimeout() {
-    register_actor("MultiTimeout", this).release();
+  explicit MultiTimeout(Slice name) {
+    register_actor(name, this).release();
   }
 
   void set_callback(Callback callback) {

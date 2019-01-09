@@ -14,6 +14,7 @@
 #include "td/utils/common.h"
 
 namespace td {
+
 class StateManager final : public Actor {
  public:
   enum class State : int32 { WaitingForNetwork, ConnectingToProxy, Connecting, Updating, Ready, Empty };
@@ -36,6 +37,8 @@ class StateManager final : public Actor {
   };
 
   void on_synchronized(bool is_synchronized);
+
+  void on_network_updated();
 
   void on_network(NetType new_network_type);
 
@@ -114,8 +117,8 @@ class StateManager final : public Actor {
   void inc_connect();
   void dec_connect();
 
-  enum Flags { OnlineFlag = 1, StateFlag = 2, NetworkFlag = 4 };
-  void notify_flags(int32 flags);
+  enum class Flag : int32 { Online, State, Network };
+  void notify_flag(Flag flag);
 
   void start_up() override;
   void loop() override;
@@ -131,4 +134,5 @@ class StateManager final : public Actor {
     return ConnectionToken(std::move(actor));
   }
 };
+
 }  // namespace td

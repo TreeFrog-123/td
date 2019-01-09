@@ -8,7 +8,10 @@
 
 #include "td/telegram/telegram_api.h"
 
+#include "td/telegram/files/FileLoaderUtils.h"
+
 #include "td/telegram/Global.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
 
 #include "td/utils/buffer.h"
@@ -16,6 +19,7 @@
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
+#include "td/utils/port/path.h"
 #include "td/utils/Random.h"
 #include "td/utils/ScopeGuard.h"
 
@@ -29,9 +33,12 @@ FileUploader::FileUploader(const LocalFileLocation &local, const RemoteFileLocat
     , encryption_key_(encryption_key)
     , bad_parts_(std::move(bad_parts))
     , callback_(std::move(callback)) {
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     iv_ = encryption_key_.mutable_iv();
     generate_iv_ = encryption_key_.iv_slice().str();
+  }
+  if (remote_.type() == RemoteFileLocation::Type::Partial && encryption_key_.is_secure()) {
+    remote_ = RemoteFileLocation{};
   }
 }
 
@@ -83,11 +90,17 @@ Result<FileLoader::PrefixInfo> FileUploader::on_update_local_location(const Loca
   SCOPE_EXIT {
     try_release_fd();
   };
+
+  if (encryption_key_.is_secure() && !fd_path_.empty()) {
+    return Status::Error("Can't change local location for Secure file");
+  }
+
   string path;
   int64 local_size = 0;
   bool local_is_ready{false};
   FileType file_type{FileType::Temp};
-  if (location.type() == LocalFileLocation::Type::Empty) {
+  if (location.type() == LocalFileLocation::Type::Empty ||
+      (location.type() == LocalFileLocation::Type::Partial && encryption_key_.is_secure())) {
     path = "";
     local_size = 0;
     local_is_ready = false;
@@ -101,6 +114,18 @@ Result<FileLoader::PrefixInfo> FileUploader::on_update_local_location(const Loca
     path = location.full().path_;
     local_is_ready = true;
     file_type = location.full().file_type_;
+  }
+
+  bool is_temp = false;
+  if (encryption_key_.is_secure() && local_is_ready) {
+    TRY_RESULT(file_fd_path, open_temp_file(FileType::Temp));
+    file_fd_path.first.close();
+    auto new_path = std::move(file_fd_path.second);
+    TRY_RESULT(hash, secure_storage::encrypt_file(encryption_key_.secret(), path, new_path));
+    LOG(INFO) << "ENCRYPT " << path << " " << new_path;
+    callback_->on_hash(hash.as_slice().str());
+    path = new_path;
+    is_temp = true;
   }
 
   if (!path.empty() && path != fd_path_) {
@@ -120,6 +145,7 @@ Result<FileLoader::PrefixInfo> FileUploader::on_update_local_location(const Loca
     fd_.close();
     fd_ = res_fd.move_as_ok();
     fd_path_ = path;
+    is_temp_ = is_temp;
   }
 
   if (local_is_ready) {
@@ -154,10 +180,19 @@ Result<FileLoader::PrefixInfo> FileUploader::on_update_local_location(const Loca
 
 Status FileUploader::on_ok(int64 size) {
   fd_.close();
+  if (is_temp_) {
+    LOG(INFO) << "UNLINK " << fd_path_;
+    unlink(fd_path_).ignore();
+  }
   return Status::OK();
 }
+
 void FileUploader::on_error(Status status) {
   fd_.close();
+  if (is_temp_) {
+    LOG(INFO) << "UNLINK " << fd_path_;
+    unlink(fd_path_).ignore();
+  }
   callback_->on_error(std::move(status));
 }
 
@@ -196,12 +231,12 @@ void FileUploader::after_start_parts() {
 
 Result<std::pair<NetQueryPtr, bool>> FileUploader::start_part(Part part, int32 part_count) {
   auto padded_size = part.size;
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     padded_size = (padded_size + 15) & ~15;
   }
   BufferSlice bytes(padded_size);
   TRY_RESULT(size, fd_.pread(bytes.as_slice().truncate(part.size), part.offset));
-  if (!encryption_key_.empty()) {
+  if (encryption_key_.is_secret()) {
     Random::secure_bytes(bytes.as_slice().substr(part.size));
     if (next_offset_ == part.offset) {
       aes_ige_encrypt(encryption_key_.key(), &iv_, bytes.as_slice(), bytes.as_slice());
@@ -240,12 +275,13 @@ Result<size_t> FileUploader::process_part(Part part, NetQueryPtr net_query) {
   if (net_query->is_error()) {
     return std::move(net_query->error());
   }
-  Result<bool> result;
-  if (big_flag_) {
-    result = fetch_result<telegram_api::upload_saveBigFilePart>(net_query->ok());
-  } else {
-    result = fetch_result<telegram_api::upload_saveFilePart>(net_query->ok());
-  }
+  Result<bool> result = [&] {
+    if (big_flag_) {
+      return fetch_result<telegram_api::upload_saveBigFilePart>(net_query->ok());
+    } else {
+      return fetch_result<telegram_api::upload_saveFilePart>(net_query->ok());
+    }
+  }();
   if (result.is_error()) {
     return result.move_as_error();
   }

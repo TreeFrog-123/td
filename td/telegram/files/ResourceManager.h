@@ -7,7 +7,6 @@
 #pragma once
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/telegram/files/FileLoaderActor.h"
 #include "td/telegram/files/ResourceState.h"
@@ -20,7 +19,7 @@
 namespace td {
 class ResourceManager : public Actor {
  public:
-  enum class Mode { Baseline, Greedy };
+  enum class Mode : int32 { Baseline, Greedy };
   explicit ResourceManager(Mode mode) : mode_(mode) {
   }
   // use through ActorShared

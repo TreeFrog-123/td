@@ -8,11 +8,12 @@
 
 #include "td/net/HttpHeaderCreator.h"
 #include "td/net/HttpOutboundConnection.h"
-#include "td/net/SslFd.h"
+#include "td/net/SslStream.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
+#include "td/utils/misc.h"
 #include "td/utils/port/IPAddress.h"
 #include "td/utils/port/SocketFd.h"
 #include "td/utils/Slice.h"
@@ -20,50 +21,62 @@
 #include <limits>
 
 namespace td {
+
 Wget::Wget(Promise<HttpQueryPtr> promise, string url, std::vector<std::pair<string, string>> headers, int32 timeout_in,
-           int32 ttl, SslFd::VerifyPeer verify_peer)
+           int32 ttl, bool prefer_ipv6, SslStream::VerifyPeer verify_peer)
     : promise_(std::move(promise))
     , input_url_(std::move(url))
     , headers_(std::move(headers))
     , timeout_in_(timeout_in)
     , ttl_(ttl)
+    , prefer_ipv6_(prefer_ipv6)
     , verify_peer_(verify_peer) {
 }
 
 Status Wget::try_init() {
   string input_url = input_url_;
   TRY_RESULT(url, parse_url(MutableSlice(input_url)));
-
-  IPAddress addr;
-  TRY_STATUS(addr.init_host_port(url.host_, url.port_));
-
-  TRY_RESULT(fd, SocketFd::open(addr));
-  if (url.protocol_ == HttpUrl::Protocol::HTTP) {
-    connection_ =
-        create_actor<HttpOutboundConnection>("Connect", std::move(fd), std::numeric_limits<std::size_t>::max(), 0, 0,
-                                             ActorOwn<HttpOutboundConnection::Callback>(actor_id(this)));
-  } else {
-    TRY_RESULT(ssl_fd, SslFd::init(std::move(fd), url.host_, CSlice() /* certificate */, verify_peer_));
-    connection_ =
-        create_actor<HttpOutboundConnection>("Connect", std::move(ssl_fd), std::numeric_limits<std::size_t>::max(), 0,
-                                             0, ActorOwn<HttpOutboundConnection::Callback>(actor_id(this)));
-  }
+  TRY_RESULT(ascii_host, idn_to_ascii(url.host_));
+  url.host_ = std::move(ascii_host);
 
   HttpHeaderCreator hc;
   hc.init_get(url.query_);
   bool was_host = false;
+  bool was_accept_encoding = false;
   for (auto &header : headers_) {
-    if (header.first == "Host") {  // TODO: lowercase
+    auto header_lower = to_lower(header.first);
+    if (header_lower == "host") {
       was_host = true;
+    }
+    if (header_lower == "accept-encoding") {
+      was_accept_encoding = true;
     }
     hc.add_header(header.first, header.second);
   }
   if (!was_host) {
     hc.add_header("Host", url.host_);
   }
-  hc.add_header("Accept-Encoding", "gzip, deflate");
+  if (!was_accept_encoding) {
+    hc.add_header("Accept-Encoding", "gzip, deflate");
+  }
+  TRY_RESULT(header, hc.finish());
 
-  send_closure(connection_, &HttpOutboundConnection::write_next, BufferSlice(hc.finish().ok()));
+  IPAddress addr;
+  TRY_STATUS(addr.init_host_port(url.host_, url.port_, prefer_ipv6_));
+
+  TRY_RESULT(fd, SocketFd::open(addr));
+  if (url.protocol_ == HttpUrl::Protocol::HTTP) {
+    connection_ = create_actor<HttpOutboundConnection>("Connect", std::move(fd), SslStream{},
+                                                       std::numeric_limits<std::size_t>::max(), 0, 0,
+                                                       ActorOwn<HttpOutboundConnection::Callback>(actor_id(this)));
+  } else {
+    TRY_RESULT(ssl_stream, SslStream::create(url.host_, CSlice() /* certificate */, verify_peer_));
+    connection_ = create_actor<HttpOutboundConnection>("Connect", std::move(fd), std::move(ssl_stream),
+                                                       std::numeric_limits<std::size_t>::max(), 0, 0,
+                                                       ActorOwn<HttpOutboundConnection::Callback>(actor_id(this)));
+  }
+
+  send_closure(connection_, &HttpOutboundConnection::write_next, BufferSlice(header));
   send_closure(connection_, &HttpOutboundConnection::write_ok);
   return Status::OK();
 }
@@ -87,9 +100,11 @@ void Wget::on_connection_error(Status error) {
 
 void Wget::on_ok(HttpQueryPtr http_query_ptr) {
   CHECK(promise_);
-  if (http_query_ptr->code_ == 302 && ttl_ > 0) {
+  if ((http_query_ptr->code_ == 301 || http_query_ptr->code_ == 302 || http_query_ptr->code_ == 307 ||
+       http_query_ptr->code_ == 308) &&
+      ttl_ > 0) {
     LOG(DEBUG) << *http_query_ptr;
-    input_url_ = http_query_ptr->header("location").str();
+    input_url_ = http_query_ptr->get_header("location").str();
     LOG(DEBUG) << input_url_;
     ttl_--;
     connection_.reset();
@@ -98,7 +113,7 @@ void Wget::on_ok(HttpQueryPtr http_query_ptr) {
     promise_.set_value(std::move(http_query_ptr));
     stop();
   } else {
-    on_error(Status::Error(PSLICE() << "http error: " << http_query_ptr->code_));
+    on_error(Status::Error(PSLICE() << "HTTP error: " << http_query_ptr->code_));
   }
 }
 
@@ -123,4 +138,5 @@ void Wget::tear_down() {
     on_error(Status::Error("Cancelled"));
   }
 }
+
 }  // namespace td

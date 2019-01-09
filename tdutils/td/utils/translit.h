@@ -4,8 +4,13 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
-#include "td/actor/impl2/Scheduler.h"
+#pragma once
+
+#include "td/utils/common.h"
+#include "td/utils/Slice.h"
 
 namespace td {
-namespace actor2 {}
+
+vector<string> get_word_transliterations(Slice word, bool allow_partial);
+
 }  // namespace td

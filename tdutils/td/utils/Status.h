@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cstring>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 #define TRY_STATUS(status)               \
@@ -84,10 +85,7 @@ class Status {
   Status() = default;
 
   bool operator==(const Status &other) const {
-    if (get_info().static_flag) {
-      return ptr_ == other.ptr_;
-    }
-    return false;
+    return ptr_ == other.ptr_;
   }
 
   Status clone() const TD_WARN_UNUSED_RESULT {
@@ -135,16 +133,6 @@ class Status {
     return status.clone_static();
   }
 
-  static Status InvalidId() TD_WARN_UNUSED_RESULT {
-    static Status status(true, ErrorType::general, 0, "Invalid Id");
-    return status.clone_static();
-  }
-
-  static Status Hangup() TD_WARN_UNUSED_RESULT {
-    static Status status(true, ErrorType::general, 0, "Hangup");
-    return status.clone_static();
-  }
-
   StringBuilder &print(StringBuilder &sb) const {
     if (is_ok()) {
       return sb << "OK";
@@ -162,7 +150,6 @@ class Status {
 #endif
         break;
       default:
-        LOG(FATAL) << "Unknown status type: " << static_cast<int8>(info.error_type);
         UNREACHABLE();
         break;
     }
@@ -186,9 +173,21 @@ class Status {
     return ptr_ != nullptr;
   }
 
+#ifdef TD_STATUS_NO_ENSURE
+  void ensure() const {
+    if (!is_ok()) {
+      LOG(FATAL) << "Unexpected Status " << to_string();
+    }
+  }
+  void ensure_error() const {
+    if (is_ok()) {
+      LOG(FATAL) << "Unexpected Status::OK";
+    }
+  }
+#else
   void ensure_impl(CSlice file_name, int line) const {
     if (!is_ok()) {
-      LOG(FATAL) << "Unexpexted Status " << to_string() << " in file " << file_name << " at line " << line;
+      LOG(FATAL) << "Unexpected Status " << to_string() << " in file " << file_name << " at line " << line;
     }
   }
   void ensure_error_impl(CSlice file_name, int line) const {
@@ -196,6 +195,7 @@ class Status {
       LOG(FATAL) << "Unexpected Status::OK in file " << file_name << " at line " << line;
     }
   }
+#endif
 
   void ignore() const {
     // nop
@@ -230,7 +230,6 @@ class Status {
         return winerror_to_string(info.error_code);
 #endif
       default:
-        LOG(FATAL) << "Unknown status type: " << static_cast<int8>(info.error_type);
         UNREACHABLE();
         return "";
     }
@@ -325,9 +324,9 @@ class Status {
 template <class T = Unit>
 class Result {
  public:
-  Result() : status_(Status::Error()) {
+  Result() : status_(Status::Error<-1>()) {
   }
-  template <class S>
+  template <class S, std::enable_if_t<!std::is_same<std::decay_t<S>, Result>::value, int> = 0>
   Result(S &&x) : status_(), value_(std::forward<S>(x)) {
   }
   Result(Status &&status) : status_(std::move(status)) {
@@ -340,7 +339,7 @@ class Result {
       new (&value_) T(std::move(other.value_));
       other.value_.~T();
     }
-    other.status_ = Status::Error();
+    other.status_ = Status::Error<-2>();
   }
   Result &operator=(Result &&other) {
     if (status_.is_ok()) {
@@ -358,7 +357,7 @@ class Result {
       other.value_.~T();
     }
     status_ = std::move(other.status_);
-    other.status_ = Status::Error();
+    other.status_ = Status::Error<-3>();
     return *this;
   }
   ~Result() {
@@ -367,12 +366,21 @@ class Result {
     }
   }
 
+#ifdef TD_STATUS_NO_ENSURE
+  void ensure() const {
+    status_.ensure();
+  }
+  void ensure_error() const {
+    status_.ensure_error();
+  }
+#else
   void ensure_impl(CSlice file_name, int line) const {
     status_.ensure_impl(file_name, line);
   }
   void ensure_error_impl(CSlice file_name, int line) const {
     status_.ensure_error_impl(file_name, line);
   }
+#endif
   void ignore() const {
     status_.ignore();
   }
@@ -389,7 +397,7 @@ class Result {
   Status move_as_error() TD_WARN_UNUSED_RESULT {
     CHECK(status_.is_error());
     SCOPE_EXIT {
-      status_ = Status::Error();
+      status_ = Status::Error<-4>();
     };
     return std::move(status_);
   }
@@ -398,6 +406,10 @@ class Result {
     return value_;
   }
   T &ok_ref() {
+    CHECK(status_.is_ok()) << status_;
+    return value_;
+  }
+  const T &ok_ref() const {
     CHECK(status_.is_ok()) << status_;
     return value_;
   }

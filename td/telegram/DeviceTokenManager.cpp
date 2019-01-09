@@ -19,7 +19,6 @@
 #include "td/utils/format.h"
 #include "td/utils/JsonBuilder.h"
 #include "td/utils/logging.h"
-#include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/tl_helpers.h"
 
@@ -60,7 +59,7 @@ void DeviceTokenManager::TokenInfo::parse(ParserT &parser) {
   PARSE_FLAG(is_unregister);
   PARSE_FLAG(is_register);
   PARSE_FLAG(is_app_sandbox);
-  END_PARSE_FLAGS();
+  END_PARSE_FLAGS_GENERIC();
   CHECK(is_sync + is_unregister + is_register == 1);
   if (is_sync) {
     state = State::Sync;
@@ -172,39 +171,13 @@ void DeviceTokenManager::register_device(tl_object_ptr<td_api::DeviceToken> devi
       }
 
       if (!device_token->endpoint_.empty()) {
-        class JsonKeys : public Jsonable {
-         public:
-          JsonKeys(Slice p256dh, Slice auth) : p256dh_(p256dh), auth_(auth) {
-          }
-          void store(JsonValueScope *scope) const {
-            auto object = scope->enter_object();
-            object << ctie("p256dh", p256dh_);
-            object << ctie("auth", auth_);
-          }
-
-         private:
-          Slice p256dh_;
-          Slice auth_;
-        };
-        class JsonWebPushToken : public Jsonable {
-         public:
-          JsonWebPushToken(Slice endpoint, Slice p256dh, Slice auth)
-              : endpoint_(endpoint), p256dh_(p256dh), auth_(auth) {
-          }
-          void store(JsonValueScope *scope) const {
-            auto object = scope->enter_object();
-            object << ctie("endpoint", endpoint_);
-            object << ctie("keys", JsonKeys(p256dh_, auth_));
-          }
-
-         private:
-          Slice endpoint_;
-          Slice p256dh_;
-          Slice auth_;
-        };
-
-        token = json_encode<string>(
-            JsonWebPushToken(device_token->endpoint_, device_token->p256dh_base64url_, device_token->auth_base64url_));
+        token = json_encode<string>(json_object([&device_token](auto &o) {
+          o("endpoint", device_token->endpoint_);
+          o("keys", json_object([&device_token](auto &o) {
+              o("p256dh", device_token->p256dh_base64url_);
+              o("auth", device_token->auth_base64url_);
+            }));
+        }));
       }
       token_type = TokenType::WEB_PUSH;
       break;

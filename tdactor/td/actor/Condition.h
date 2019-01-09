@@ -7,10 +7,12 @@
 #pragma once
 
 #include "td/actor/actor.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/logging.h"
 
 namespace td {
+
 class Condition {
   class Helper : public Actor {
    public:
@@ -44,4 +46,5 @@ class Condition {
   ActorId<Helper> actor_;
   ActorOwn<Helper> own_actor_;
 };
+
 }  // namespace td

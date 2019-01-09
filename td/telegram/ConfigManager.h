@@ -6,12 +6,14 @@
 //
 #pragma once
 
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/DcOptions.h"
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/telegram/telegram_api.h"
 
 #include "td/actor/actor.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/port/IPAddress.h"
 #include "td/utils/Slice.h"
@@ -20,19 +22,21 @@
 
 namespace td {
 
+class ConfigShared;
+
 using SimpleConfig = tl_object_ptr<telegram_api::help_configSimple>;
 
 Result<SimpleConfig> decode_config(Slice input);
 
-ActorOwn<> get_simple_config_azure(Promise<SimpleConfig> promise, bool is_test = false, int32 scheduler_id = -1);
+ActorOwn<> get_simple_config_azure(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                   int32 scheduler_id);
 
-ActorOwn<> get_simple_config_google_app(Promise<SimpleConfig> promise, bool is_test = false, int32 scheduler_id = -1);
-
-ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_test = false, int32 scheduler_id = -1);
+ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                        int32 scheduler_id);
 
 using FullConfig = tl_object_ptr<telegram_api::config>;
 
-ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise);
+ActorOwn<> get_full_config(DcId dc_id, IPAddress ip_address, Promise<FullConfig> promise);
 
 class ConfigRecoverer;
 class ConfigManager : public NetQueryCallback {

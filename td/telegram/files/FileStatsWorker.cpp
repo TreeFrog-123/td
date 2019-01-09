@@ -11,6 +11,8 @@
 #include "td/telegram/files/FileLoaderUtils.h"
 #include "td/telegram/Global.h"
 
+#include "td/db/SqliteKeyValue.h"
+
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/PathView.h"
@@ -92,6 +94,9 @@ template <class CallbackT>
 Status scan_fs(CallbackT &&callback) {
   for (int i = 0; i < file_type_size; i++) {
     auto file_type = static_cast<FileType>(i);
+    if (file_type == FileType::SecureRaw) {
+      continue;
+    }
     auto files_dir = get_files_dir(file_type);
     td::walk_path(files_dir, [&](CSlice path, bool is_dir) {
       if (is_dir) {

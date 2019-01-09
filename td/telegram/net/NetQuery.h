@@ -47,7 +47,7 @@ class NetQuery : public ListNode {
   NetQuery() = default;
 
   enum class State : int8 { Empty, Query, OK, Error };
-  enum class Type { Common, Upload, Download, DownloadSmall };
+  enum class Type : int8 { Common, Upload, Download, DownloadSmall };
   enum class AuthFlag : int8 { Off, On };
   enum class GzipFlag : int8 { Off, On };
   enum Error : int32 { Resend = 202, Cancelled = 203, ResendInvokeAfter = 204 };
@@ -133,13 +133,7 @@ class NetQuery : public ListNode {
   void on_net_write(size_t size);
   void on_net_read(size_t size);
 
-  void set_error(Status status, string source = "") {
-    if (status.code() == Error::Resend || status.code() == Error::Cancelled ||
-        status.code() == Error::ResendInvokeAfter) {
-      return set_error_impl(Status::Error(200, PSLICE() << status), std::move(source));
-    }
-    set_error_impl(std::move(status), source);
-  }
+  void set_error(Status status, string source = "");
 
   void set_error_resend() {
     set_error_impl(Status::Error<Error::Resend>());
@@ -244,9 +238,11 @@ class NetQuery : public ListNode {
     debug_cnt_++;
     VLOG(net_query) << *this << " " << tag("debug", debug_str_);
   }
+
   void set_callback(ActorShared<NetQueryCallback> callback) {
     callback_ = std::move(callback);
   }
+
   ActorShared<NetQueryCallback> move_callback() {
     return std::move(callback_);
   }
@@ -390,6 +386,12 @@ Result<typename T::ReturnType> fetch_result(NetQueryPtr query) {
   }
   auto buffer = query->move_as_ok();
   return fetch_result<T>(buffer);
+}
+
+template <class T>
+Result<typename T::ReturnType> fetch_result(Result<NetQueryPtr> r_query) {
+  TRY_RESULT(query, std::move(r_query));
+  return fetch_result<T>(std::move(query));
 }
 
 inline void NetQueryCallback::on_result(NetQueryPtr query) {

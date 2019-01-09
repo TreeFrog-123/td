@@ -12,14 +12,16 @@
 #include "td/telegram/net/NetQueryDispatcher.h"
 #include "td/telegram/net/TempAuthKeyWatchdog.h"
 #include "td/telegram/TdDb.h"
-#include "td/telegram/Version.h"
 
-#include "td/actor/MultiPromise.h"
 #include "td/actor/PromiseFuture.h"
+
+#include "td/db/Pmc.h"
 
 #include "td/utils/format.h"
 #include "td/utils/port/Clocks.h"
 #include "td/utils/tl_helpers.h"
+
+#include <cmath>
 
 namespace td {
 
@@ -52,7 +54,7 @@ void Global::set_temp_auth_key_watchdog(ActorOwn<TempAuthKeyWatchdog> actor) {
   temp_auth_key_watchdog_ = std::move(actor);
 }
 
-const MtprotoHeader &Global::mtproto_header() const {
+MtprotoHeader &Global::mtproto_header() {
   return *mtproto_header_;
 }
 void Global::set_mtproto_header(std::unique_ptr<MtprotoHeader> mtproto_header) {
@@ -97,11 +99,60 @@ void Global::update_server_time_difference(double diff) {
   }
 }
 
+DcId Global::get_webfile_dc_id() const {
+  int32 dc_id = shared_config_->get_option_integer("webfile_dc_id");
+  if (!DcId::is_valid(dc_id)) {
+    if (is_test_dc()) {
+      dc_id = 2;
+    } else {
+      dc_id = 4;
+    }
+
+    CHECK(DcId::is_valid(dc_id));
+  }
+
+  return DcId::internal(dc_id);
+}
+
 void Global::set_net_query_dispatcher(std::unique_ptr<NetQueryDispatcher> net_query_dispatcher) {
   net_query_dispatcher_ = std::move(net_query_dispatcher);
 }
+
 void Global::set_shared_config(std::unique_ptr<ConfigShared> shared_config) {
   shared_config_ = std::move(shared_config);
+}
+
+int64 Global::get_location_key(double latitude, double longitude) {
+  const double PI = 3.14159265358979323846;
+  latitude *= PI / 180;
+  longitude *= PI / 180;
+
+  int64 key = 0;
+  if (latitude < 0) {
+    latitude = -latitude;
+    key = 65536;
+  }
+
+  double f = std::tan(PI / 4 - latitude / 2);
+  key += static_cast<int64>(f * std::cos(longitude) * 128) * 256;
+  key += static_cast<int64>(f * std::sin(longitude) * 128);
+  return key;
+}
+
+int64 Global::get_location_access_hash(double latitude, double longitude) {
+  auto it = location_access_hashes_.find(get_location_key(latitude, longitude));
+  if (it == location_access_hashes_.end()) {
+    return 0;
+  }
+  return it->second;
+}
+
+void Global::add_location_access_hash(double latitude, double longitude, int64 access_hash) {
+  if (access_hash == 0) {
+    return;
+  }
+
+  location_access_hashes_[get_location_key(latitude, longitude)] = access_hash;
 }
 
 }  // namespace td

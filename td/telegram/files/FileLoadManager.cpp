@@ -7,6 +7,7 @@
 #include "td/telegram/files/FileLoadManager.h"
 
 #include "td/telegram/Global.h"
+#include "td/telegram/net/DcId.h"
 
 #include "td/utils/common.h"
 #include "td/utils/filesystem.h"
@@ -14,6 +15,7 @@
 #include "td/utils/logging.h"
 
 namespace td {
+
 FileLoadManager::FileLoadManager(ActorShared<Callback> callback, ActorShared<> parent)
     : callback_(std::move(callback)), parent_(std::move(parent)) {
 }
@@ -50,7 +52,8 @@ void FileLoadManager::download(QueryId id, const FullRemoteFileLocation &remote_
   bool is_small = size < 20 * 1024;
   node->loader_ = create_actor<FileDownloader>("Downloader", remote_location, local, size, std::move(name),
                                                encryption_key, is_small, search_file, std::move(callback));
-  auto &resource_manager = get_download_resource_manager(is_small, remote_location.get_dc_id());
+  DcId dc_id = remote_location.is_web() ? G()->get_webfile_dc_id() : remote_location.get_dc_id();
+  auto &resource_manager = get_download_resource_manager(is_small, dc_id);
   send_closure(resource_manager, &ResourceManager::register_worker,
                ActorShared<FileLoaderActor>(node->loader_.get(), static_cast<uint64>(-1)), priority);
   query_id_to_node_id_[id] = node_id;
@@ -153,7 +156,7 @@ void FileLoadManager::update_local_file_location(QueryId id, const LocalFileLoca
   }
   send_closure(node->loader_, &FileLoaderActor::update_local_file_location, local);
 }
-void FileLoadManager::close() {
+void FileLoadManager::hangup() {
   nodes_container_.for_each([](auto id, auto &node) { node.loader_.reset(); });
   stop_flag_ = true;
   loop();
@@ -178,6 +181,17 @@ void FileLoadManager::on_partial_download(const PartialLocalFileLocation &partia
   }
   if (!stop_flag_) {
     send_closure(callback_, &Callback::on_partial_download, node->query_id_, partial_local, ready_size);
+  }
+}
+
+void FileLoadManager::on_hash(string hash) {
+  auto node_id = get_link_token();
+  auto node = nodes_container_.get(node_id);
+  if (node == nullptr) {
+    return;
+  }
+  if (!stop_flag_) {
+    send_closure(callback_, &Callback::on_hash, node->query_id_, std::move(hash));
   }
 }
 
@@ -255,11 +269,8 @@ void FileLoadManager::hangup_shared() {
 }
 
 void FileLoadManager::loop() {
-  if (stop_flag_) {
-    if (nodes_container_.empty()) {
-      stop();
-    }
-    return;
+  if (stop_flag_ && nodes_container_.empty()) {
+    stop();
   }
 }
 

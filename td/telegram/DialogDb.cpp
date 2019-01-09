@@ -8,6 +8,9 @@
 
 #include "td/telegram/Version.h"
 
+#include "td/actor/actor.h"
+#include "td/actor/SchedulerLocalStorage.h"
+
 #include "td/db/SqliteDb.h"
 #include "td/db/SqliteKeyValue.h"
 #include "td/db/SqliteStatement.h"
@@ -209,7 +212,7 @@ class DialogDbAsync : public DialogDbAsyncInterface {
       do_flush();
       sync_db_safe_.reset();
       sync_db_ = nullptr;
-      promise.set_result(Unit());
+      promise.set_value(Unit());
       stop();
     }
 

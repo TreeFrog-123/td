@@ -1,9 +1,9 @@
-//
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
-//
-// Distributed under the Boost Software License, Version 1.0. (See accompanying
-// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-//
+#
+# Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+#
+# Distributed under the Boost Software License, Version 1.0. (See accompanying
+# file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+#
 from ctypes.util import find_library
 from ctypes import *
 import json
@@ -95,7 +95,7 @@ while True:
     event = td_receive()
     if event:
         # if client is closed, we need to destroy it and create new client
-        if event['@type'] is 'updateAuthorizationState' and event['authorization_state']['@type'] is 'authorizationStateClosed':
+        if event['@type'] == 'updateAuthorizationState' and event['authorization_state']['@type'] == 'authorizationStateClosed':
             break
 
         # handle an incoming update or an answer to a previously sent request

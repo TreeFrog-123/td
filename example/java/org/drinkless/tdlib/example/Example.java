@@ -485,13 +485,36 @@ public final class Example {
                     }
                     break;
                 }
-                case TdApi.UpdateNotificationSettings.CONSTRUCTOR: {
-                    TdApi.UpdateNotificationSettings update = (TdApi.UpdateNotificationSettings) object;
-                    if (update.scope instanceof TdApi.NotificationSettingsScopeChat) {
-                        TdApi.Chat chat = chats.get(((TdApi.NotificationSettingsScopeChat) update.scope).chatId);
-                        synchronized (chat) {
-                            chat.notificationSettings = update.notificationSettings;
-                        }
+                case TdApi.UpdateChatNotificationSettings.CONSTRUCTOR: {
+                    TdApi.UpdateChatNotificationSettings update = (TdApi.UpdateChatNotificationSettings) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.notificationSettings = update.notificationSettings;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatDefaultDisableNotification.CONSTRUCTOR: {
+                    TdApi.UpdateChatDefaultDisableNotification update = (TdApi.UpdateChatDefaultDisableNotification) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.defaultDisableNotification = update.defaultDisableNotification;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatIsMarkedAsUnread.CONSTRUCTOR: {
+                    TdApi.UpdateChatIsMarkedAsUnread update = (TdApi.UpdateChatIsMarkedAsUnread) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.isMarkedAsUnread = update.isMarkedAsUnread;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatIsSponsored.CONSTRUCTOR: {
+                    TdApi.UpdateChatIsSponsored updateChat = (TdApi.UpdateChatIsSponsored) object;
+                    TdApi.Chat chat = chats.get(updateChat.chatId);
+                    synchronized (chat) {
+                        chat.isSponsored = updateChat.isSponsored;
+                        setChatOrder(chat, updateChat.order);
                     }
                     break;
                 }

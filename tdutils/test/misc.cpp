@@ -5,19 +5,25 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/utils/base64.h"
+#include "td/utils/BigNum.h"
 #include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/port/EventFd.h"
 #include "td/utils/port/FileFd.h"
+#include "td/utils/port/IPAddress.h"
 #include "td/utils/port/path.h"
 #include "td/utils/port/sleep.h"
 #include "td/utils/port/Stat.h"
 #include "td/utils/port/thread.h"
+#include "td/utils/port/wstring_convert.h"
 #include "td/utils/Random.h"
 #include "td/utils/Slice.h"
 #include "td/utils/StringBuilder.h"
 #include "td/utils/tests.h"
+#include "td/utils/translit.h"
+#include "td/utils/unicode.h"
+#include "td/utils/utf8.h"
 
 #include <atomic>
 #include <clocale>
@@ -242,6 +248,34 @@ TEST(Misc, to_double) {
   test_to_double();
 }
 
+TEST(Misc, print_int) {
+  ASSERT_STREQ("-9223372036854775808", PSLICE() << -9223372036854775807 - 1);
+  ASSERT_STREQ("-2147483649", PSLICE() << -2147483649ll);
+  ASSERT_STREQ("-2147483648", PSLICE() << -2147483647 - 1);
+  ASSERT_STREQ("-2147483647", PSLICE() << -2147483647);
+  ASSERT_STREQ("-123456789", PSLICE() << -123456789);
+  ASSERT_STREQ("-1", PSLICE() << -1);
+  ASSERT_STREQ("0", PSLICE() << 0);
+  ASSERT_STREQ("1", PSLICE() << 1);
+  ASSERT_STREQ("9", PSLICE() << 9);
+  ASSERT_STREQ("10", PSLICE() << 10);
+  ASSERT_STREQ("2147483647", PSLICE() << 2147483647);
+  ASSERT_STREQ("2147483648", PSLICE() << 2147483648ll);
+  ASSERT_STREQ("2147483649", PSLICE() << 2147483649ll);
+  ASSERT_STREQ("9223372036854775807", PSLICE() << 9223372036854775807ll);
+}
+
+TEST(Misc, print_uint) {
+  ASSERT_STREQ("0", PSLICE() << 0u);
+  ASSERT_STREQ("1", PSLICE() << 1u);
+  ASSERT_STREQ("9", PSLICE() << 9u);
+  ASSERT_STREQ("10", PSLICE() << 10u);
+  ASSERT_STREQ("2147483647", PSLICE() << 2147483647u);
+  ASSERT_STREQ("2147483648", PSLICE() << 2147483648u);
+  ASSERT_STREQ("2147483649", PSLICE() << 2147483649u);
+  ASSERT_STREQ("9223372036854775807", PSLICE() << 9223372036854775807u);
+}
+
 static void test_get_url_query_file_name_one(const char *prefix, const char *suffix, const char *file_name) {
   auto path = string(prefix) + string(file_name) + string(suffix);
   ASSERT_STREQ(file_name, get_url_query_file_name(path));
@@ -259,4 +293,129 @@ TEST(Misc, get_url_query_file_name) {
     test_get_url_query_file_name_one("/", suffix, "a123asadas");
     test_get_url_query_file_name_one("/", suffix, "\\a\\1\\2\\3\\a\\s\\a\\das");
   }
+}
+
+static void test_idn_to_ascii_one(string host, string result) {
+  if (result != idn_to_ascii(host).ok()) {
+    LOG(ERROR) << "Failed to convert " << host << " to " << result << ", got \"" << idn_to_ascii(host).ok() << "\"";
+  }
+}
+
+TEST(Misc, idn_to_ascii) {
+  test_idn_to_ascii_one("::::::::::::::::::::::::::::::::::::::@/", "::::::::::::::::::::::::::::::::::::::@/");
+  test_idn_to_ascii_one("", "");
+  test_idn_to_ascii_one("%30", "%30");
+  test_idn_to_ascii_one("127.0.0.1", "127.0.0.1");
+  test_idn_to_ascii_one("fe80::", "fe80::");
+  test_idn_to_ascii_one("fe80:0:0:0:200:f8ff:fe21:67cf", "fe80:0:0:0:200:f8ff:fe21:67cf");
+  test_idn_to_ascii_one("2001:0db8:11a3:09d7:1f34:8a2e:07a0:765d", "2001:0db8:11a3:09d7:1f34:8a2e:07a0:765d");
+  test_idn_to_ascii_one("::ffff:192.0.2.1", "::ffff:192.0.2.1");
+  test_idn_to_ascii_one("ABCDEF", "abcdef");
+  test_idn_to_ascii_one("abcdef", "abcdef");
+  test_idn_to_ascii_one("abæcdöef", "xn--abcdef-qua4k");
+  test_idn_to_ascii_one("schön", "xn--schn-7qa");
+  test_idn_to_ascii_one("ยจฆฟคฏข", "xn--22cdfh1b8fsa");
+  test_idn_to_ascii_one("☺", "xn--74h");
+  test_idn_to_ascii_one("правда", "xn--80aafi6cg");
+  test_idn_to_ascii_one("büücher", "xn--bcher-kvaa");
+  test_idn_to_ascii_one("BüüCHER", "xn--bcher-kvaa");
+  test_idn_to_ascii_one("bücüher", "xn--bcher-kvab");
+  test_idn_to_ascii_one("bücherü", "xn--bcher-kvae");
+  test_idn_to_ascii_one("ýbücher", "xn--bcher-kvaf");
+  test_idn_to_ascii_one("übücher", "xn--bcher-jvab");
+  test_idn_to_ascii_one("bücher.tld", "xn--bcher-kva.tld");
+  test_idn_to_ascii_one("кто.рф", "xn--j1ail.xn--p1ai");
+  test_idn_to_ascii_one("wіkіреdіа.org", "xn--wkd-8cdx9d7hbd.org");
+  test_idn_to_ascii_one("cnwin2k8中国.avol.com", "xn--cnwin2k8-sd0mx14e.avol.com");
+  test_idn_to_ascii_one("win-2k12r2-addc.阿伯测阿伯测ad.hai.com", "win-2k12r2-addc.xn--ad-tl3ca3569aba8944eca.hai.com");
+  test_idn_to_ascii_one("✌.ws", "xn--7bi.ws");
+  //  test_idn_to_ascii_one("✌️.ws", "xn--7bi.ws"); // needs nameprep to succeed
+  test_idn_to_ascii_one("⛧", "xn--59h");
+  test_idn_to_ascii_one("--рф.рф", "xn-----mmcq.xn--p1ai");
+  ASSERT_TRUE(idn_to_ascii("\xc0").is_error());
+}
+
+#if TD_WINDOWS
+static void test_to_wstring_one(string str) {
+  ASSERT_STREQ(str, from_wstring(to_wstring(str).ok()).ok());
+}
+
+TEST(Misc, to_wstring) {
+  test_to_wstring_one("");
+  for (int i = 0; i < 10; i++) {
+    test_to_wstring_one("test");
+    test_to_wstring_one("тест");
+  }
+  string str;
+  for (uint32 i = 0; i <= 0xD7FF; i++) {
+    append_utf8_character(str, i);
+  }
+  for (uint32 i = 0xE000; i <= 0x10FFFF; i++) {
+    append_utf8_character(str, i);
+  }
+  test_to_wstring_one(str);
+  ASSERT_TRUE(to_wstring("\xc0").is_error());
+  auto emoji = to_wstring("🏟").ok();
+  ASSERT_TRUE(from_wstring(emoji).ok() == "🏟");
+  ASSERT_TRUE(emoji.size() == 2);
+  auto emoji2 = emoji;
+  emoji[0] = emoji[1];
+  emoji2[1] = emoji2[0];
+  ASSERT_TRUE(from_wstring(emoji).is_error());
+  ASSERT_TRUE(from_wstring(emoji2).is_error());
+  emoji2[0] = emoji[0];
+  ASSERT_TRUE(from_wstring(emoji2).is_error());
+}
+#endif
+
+static void test_translit(string word, vector<string> result, bool allow_partial = true) {
+  ASSERT_EQ(result, get_word_transliterations(word, allow_partial));
+}
+
+TEST(Misc, translit) {
+  test_translit("word", {"word", "ворд"});
+  test_translit("", {});
+  test_translit("ььььььььь", {"ььььььььь"});
+  test_translit("крыло", {"krylo", "крыло"});
+  test_translit("krylo", {"krylo", "крило"});
+  test_translit("crylo", {"crylo", "крило"});
+  test_translit("cheiia", {"cheiia", "кхеииа", "чейия"});
+  test_translit("cheii", {"cheii", "кхеии", "чейи", "чейий", "чейия"});
+  test_translit("s", {"s", "с", "ш", "щ"});
+  test_translit("y", {"e", "y", "е", "и", "ю", "я"});
+  test_translit("j", {"e", "j", "е", "й", "ю", "я"});
+  test_translit("yo", {"e", "yo", "е", "ио"});
+  test_translit("artjom", {"artem", "artjom", "артем", "артйом"});
+  test_translit("artyom", {"artem", "artyom", "артем", "артиом"});
+  test_translit("arty", {"arte", "arty", "арте", "арти", "артю", "артя"});
+  test_translit("льи", {"li", "lia", "ly", "льи"});
+  test_translit("y", {"y", "и"}, false);
+  test_translit("yo", {"e", "yo", "е", "ио"}, false);
+}
+
+static void test_unicode(uint32 (*func)(uint32)) {
+  for (uint32 i = 0; i <= 0x110000; i++) {
+    auto res = func(i);
+    CHECK(res <= 0x10ffff);
+  }
+}
+
+TEST(Misc, unicode) {
+  test_unicode(prepare_search_character);
+  test_unicode(unicode_to_lower);
+  test_unicode(remove_diacritics);
+}
+
+TEST(BigNum, from_decimal) {
+  ASSERT_TRUE(BigNum::from_decimal("").is_error());
+  ASSERT_TRUE(BigNum::from_decimal("a").is_error());
+  ASSERT_TRUE(BigNum::from_decimal("123a").is_error());
+  ASSERT_TRUE(BigNum::from_decimal("-123a").is_error());
+  // ASSERT_TRUE(BigNum::from_decimal("-").is_error());
+  ASSERT_TRUE(BigNum::from_decimal("123").is_ok());
+  ASSERT_TRUE(BigNum::from_decimal("-123").is_ok());
+  ASSERT_TRUE(BigNum::from_decimal("0").is_ok());
+  ASSERT_TRUE(BigNum::from_decimal("-0").is_ok());
+  ASSERT_TRUE(BigNum::from_decimal("-999999999999999999999999999999999999999999999999").is_ok());
+  ASSERT_TRUE(BigNum::from_decimal("999999999999999999999999999999999999999999999999").is_ok());
 }

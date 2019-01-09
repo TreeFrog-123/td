@@ -9,6 +9,8 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
 
+#include "td/actor/PromiseFuture.h"
+
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -49,6 +51,9 @@ void SequenceDispatcher::check_timeout(Data &data) {
   data.query_->total_timeout += data.total_timeout_;
   data.total_timeout_ = 0;
   if (data.query_->total_timeout > data.query_->total_timeout_limit) {
+    LOG(WARNING) << "Fail " << data.query_ << " to " << data.query_->source_ << " because total_timeout "
+                 << data.query_->total_timeout << " is greater than total_timeout_limit "
+                 << data.query_->total_timeout_limit;
     data.query_->set_error(Status::Error(
         429, PSLICE() << "Too Many Requests: retry after " << static_cast<int32>(data.last_timeout_ + 0.999)));
     data.state_ = State::Dummy;
@@ -218,7 +223,7 @@ void SequenceDispatcher::tear_down() {
       continue;
     }
     data.state_ = State::Dummy;
-    data.query_->set_error(Status::Error(500, "Internal Server Error: closing"));
+    data.query_->set_error(Status::Error(500, "Request aborted"));
     do_finish(data);
   }
 }
